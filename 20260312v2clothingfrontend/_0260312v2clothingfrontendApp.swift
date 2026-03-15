@@ -1,32 +1,13 @@
-//
-//  _0260312v2clothingfrontendApp.swift
-//  20260312v2clothingfrontend
-//
-//  Created by Luca Liautaud on 3/12/26.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
 struct _0260312v2clothingfrontendApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @State private var authViewModel = AuthViewModel()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(authViewModel)
         }
-        .modelContainer(sharedModelContainer)
     }
 }
