@@ -1,13 +1,18 @@
 import Foundation
 
 enum SwipeType: String, Codable, Sendable {
+    case LOVE
     case LIKE
-    case PASS
-    case SUPERLIKE
+    case DISLIKE
+    case NEUTRAL
 }
 
 struct SwipeRequest: Codable, Sendable {
     let itemId: String
+    let action: SwipeType
+}
+
+struct UpdateSwipeRequest: Codable, Sendable {
     let action: SwipeType
 }
 

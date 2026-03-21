@@ -1,7 +1,7 @@
 import Foundation
 
 enum SwipeService {
-    /// Records a swipe (like, pass, or superlike) on an item.
+    /// Records a swipe (love, like, dislike, or neutral) on an item.
     static func recordSwipe(itemId: String, type: SwipeType) async throws {
         let body = SwipeRequest(itemId: itemId, action: type)
         try await NetworkManager.shared.requestVoid(
@@ -29,6 +29,16 @@ enum SwipeService {
         try await NetworkManager.shared.requestVoid(
             "/swipes/last",
             method: "DELETE"
+        )
+    }
+
+    /// Updates an existing swipe record's action.
+    static func updateSwipe(swipeId: String, action: SwipeType) async throws -> SwipeRecord {
+        let body = UpdateSwipeRequest(action: action)
+        return try await NetworkManager.shared.request(
+            "/swipes/\(swipeId)",
+            method: "PATCH",
+            body: body
         )
     }
 }

@@ -8,7 +8,8 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: 20) {
             Text("Welcome Back")
-                .font(.title.bold())
+                .font(.appDisplay(size: 28))
+                .fontWeight(.bold)
 
             VStack(spacing: 14) {
                 TextField("Email", text: $email)
@@ -16,43 +17,47 @@ struct LoginView: View {
                     .keyboardType(.emailAddress)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
                 SecureField("Password", text: $password)
                     .textContentType(.password)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
-            if let error = authViewModel.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button {
-                Task { await authViewModel.login(email: email, password: password) }
-            } label: {
-                Group {
-                    if authViewModel.isLoading {
-                        ProgressView()
-                    } else {
-                        Text("Log In")
-                            .fontWeight(.semibold)
-                    }
+                if let error = authViewModel.errorMessage {
+                    Text(error)
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(.tint)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Button {
+                    Task { await authViewModel.login(email: email, password: password) }
+                } label: {
+                    Group {
+                        if authViewModel.isLoading {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Text("Log In")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.appAccent)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(email.isEmpty || password.isEmpty || authViewModel.isLoading)
             }
-            .disabled(email.isEmpty || password.isEmpty || authViewModel.isLoading)
+            .padding(20)
+            .foregroundStyle(Color.appPrimaryText)
+            .popArtCardContainer()
         }
         .padding(.horizontal, 24)
+        .padding(.trailing, PopArtCardStyle.shadowOffset)
+        .padding(.bottom, PopArtCardStyle.shadowOffset)
     }
 }

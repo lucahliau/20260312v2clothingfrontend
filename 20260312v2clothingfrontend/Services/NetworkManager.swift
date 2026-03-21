@@ -23,7 +23,7 @@ enum NetworkError: LocalizedError {
 final class NetworkManager {
     static let shared = NetworkManager()
 
-    let baseURL = "http://localhost:3000"
+    let baseURL = "https://20260311-clothes-backend-production.up.railway.app"
     private let session = URLSession.shared
 
     private init() {}

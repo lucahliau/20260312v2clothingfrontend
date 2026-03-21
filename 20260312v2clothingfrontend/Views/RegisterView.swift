@@ -14,7 +14,8 @@ struct RegisterView: View {
     var body: some View {
         VStack(spacing: 20) {
             Text("Create Account")
-                .font(.title.bold())
+                .font(.appDisplay(size: 28))
+                .fontWeight(.bold)
 
             VStack(spacing: 14) {
                 TextField("Email", text: $email)
@@ -22,63 +23,65 @@ struct RegisterView: View {
                     .keyboardType(.emailAddress)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
                 TextField("Username", text: $username)
                     .textContentType(.username)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
                 SecureField("Password", text: $password)
                     .textContentType(.newPassword)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
                 SecureField("Confirm Password", text: $confirmPassword)
                     .textContentType(.newPassword)
-                    .padding()
-                    .background(.quaternary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
+                    .foregroundStyle(Color.appPrimaryText)
+                    .authFormFieldChrome()
 
-            if !confirmPassword.isEmpty && !passwordsMatch {
-                Text("Passwords do not match")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            if let error = authViewModel.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button {
-                Task { await authViewModel.register(email: email, username: username, password: password) }
-            } label: {
-                Group {
-                    if authViewModel.isLoading {
-                        ProgressView()
-                    } else {
-                        Text("Sign Up")
-                            .fontWeight(.semibold)
-                    }
+                if !confirmPassword.isEmpty && !passwordsMatch {
+                    Text("Passwords do not match")
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(.red)
                 }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(.tint)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                if let error = authViewModel.errorMessage {
+                    Text(error)
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button {
+                    Task { await authViewModel.register(email: email, username: username, password: password) }
+                } label: {
+                    Group {
+                        if authViewModel.isLoading {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Text("Sign Up")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.appAccent)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(email.isEmpty || username.isEmpty || !passwordsMatch || authViewModel.isLoading)
             }
-            .disabled(email.isEmpty || username.isEmpty || !passwordsMatch || authViewModel.isLoading)
+            .padding(20)
+            .foregroundStyle(Color.appPrimaryText)
+            .popArtCardContainer()
         }
         .padding(.horizontal, 24)
+        .padding(.trailing, PopArtCardStyle.shadowOffset)
+        .padding(.bottom, PopArtCardStyle.shadowOffset)
     }
 }
