@@ -4,6 +4,20 @@ import Security
 enum KeychainManager {
     static let accessTokenKey = "accessToken"
     static let refreshTokenKey = "refreshToken"
+    static let deviceIdKey = "deviceId"
+
+    /// Returns the stable per-device identifier, generating + persisting one on
+    /// first call. Stored in Keychain (no iCloud sync) so it survives reinstalls
+    /// but is unique per physical device — the server keys per-device sessions
+    /// off this.
+    static func deviceId() -> String {
+        if let existing = read(key: deviceIdKey), !existing.isEmpty {
+            return existing
+        }
+        let new = UUID().uuidString
+        save(key: deviceIdKey, data: new)
+        return new
+    }
 
     static func save(key: String, data: String) {
         guard let data = data.data(using: .utf8) else { return }

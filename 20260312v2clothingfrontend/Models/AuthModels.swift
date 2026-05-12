@@ -1,18 +1,26 @@
 import Foundation
 
 struct LoginRequest: Codable, Sendable {
-    let email: String
+    let username: String
     let password: String
+    let deviceId: String
 }
 
 struct RegisterRequest: Codable, Sendable {
     let email: String
     let username: String
     let password: String
+    let deviceId: String
 }
 
 struct RefreshRequest: Codable, Sendable {
     let refreshToken: String
+    let deviceId: String
+}
+
+struct LogoutRequest: Codable, Sendable {
+    let refreshToken: String?
+    let deviceId: String
 }
 
 struct AuthResponse: Codable, Sendable {
@@ -45,13 +53,14 @@ struct ForgotPasswordRequest: Codable, Sendable {
 
 struct ResetPasswordRequest: Codable, Sendable {
     let token: String
-    let newPassword: String
+    let password: String
 }
 
 struct AppleSignInRequest: Codable, Sendable {
     let identityToken: String
     let authorizationCode: String?
     let user: AppleUser?
+    let deviceId: String
 }
 
 struct AppleUser: Codable, Sendable {
