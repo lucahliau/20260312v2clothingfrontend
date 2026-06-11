@@ -16,9 +16,10 @@ enum AuthService {
         )
     }
 
-    static func login(username: String, password: String) async throws -> AuthResponse {
+    /// `identifier` may be an email or a username — the backend accepts both.
+    static func login(identifier: String, password: String) async throws -> AuthResponse {
         let body = LoginRequest(
-            username: username,
+            username: identifier,
             password: password,
             deviceId: KeychainManager.deviceId()
         )
@@ -66,11 +67,21 @@ enum AuthService {
         )
     }
 
-    static func signInWithApple(identityToken: String, authorizationCode: String? = nil, user: AppleUser? = nil) async throws -> AuthResponse {
+    /// Always 200 on the server (no account enumeration) — safe to call freely.
+    static func resendVerification(email: String) async throws {
+        let body = ResendVerificationRequest(email: email)
+        try await NetworkManager.shared.requestVoid(
+            "/auth/resend-verification",
+            method: "POST",
+            body: body,
+            authenticated: false
+        )
+    }
+
+    static func signInWithApple(identityToken: String, fullName: AppleFullName? = nil) async throws -> AuthResponse {
         let body = AppleSignInRequest(
             identityToken: identityToken,
-            authorizationCode: authorizationCode,
-            user: user,
+            fullName: fullName,
             deviceId: KeychainManager.deviceId()
         )
         return try await NetworkManager.shared.request(
@@ -81,9 +92,13 @@ enum AuthService {
         )
     }
 
-    static func changePassword(currentPassword: String, newPassword: String) async throws {
-        let body = ChangePasswordRequest(currentPassword: currentPassword, newPassword: newPassword)
-        try await NetworkManager.shared.requestVoid(
+    static func changePassword(currentPassword: String, newPassword: String) async throws -> ChangePasswordResponse {
+        let body = ChangePasswordRequest(
+            currentPassword: currentPassword,
+            newPassword: newPassword,
+            deviceId: KeychainManager.deviceId()
+        )
+        return try await NetworkManager.shared.request(
             "/auth/change-password",
             method: "POST",
             body: body

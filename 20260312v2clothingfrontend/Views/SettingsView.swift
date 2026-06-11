@@ -1,5 +1,9 @@
+import OSLog
+import PhotosUI
 import SwiftUI
 import UIKit
+
+private let settingsAvatarLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Clothing", category: "SettingsAvatar")
 
 private enum SettingsOverlay: Identifiable, Equatable {
     case dateOfBirth
@@ -22,9 +26,15 @@ private enum SettingsOverlay: Identifiable, Equatable {
 struct SettingsView: View {
     @Environment(AuthViewModel.self) private var authViewModel
     @Environment(SettingsViewModel.self) private var viewModel
+    @Environment(FeedViewModel.self) private var feedViewModel
 
     @State private var activeOverlay: SettingsOverlay?
     @State private var tempDateOfBirth = Date()
+    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var showCameraPicker = false
+    @State private var capturedCameraImage: UIImage?
+    @State private var showChangePassword = false
+    @State private var showDeleteAccount = false
 
     private static let displayDateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -41,6 +51,25 @@ struct SettingsView: View {
         settingsBodyContent
             .navigationTitle("Settings")
             .task { await viewModel.loadProfileIfNeeded() }
+            .onChange(of: photoPickerItem) { _, new in
+                Task { await handlePhotoLibrarySelection(new) }
+            }
+            .onChange(of: capturedCameraImage) { _, new in
+                guard let new else { return }
+                Task {
+                    await viewModel.uploadAvatarFromUIImage(new)
+                    capturedCameraImage = nil
+                }
+            }
+            .sheet(isPresented: $showCameraPicker) {
+                CameraImagePicker(capturedImage: $capturedCameraImage)
+            }
+            .sheet(isPresented: $showChangePassword) {
+                ChangePasswordView()
+            }
+            .sheet(isPresented: $showDeleteAccount) {
+                DeleteAccountSheet(username: viewModel.username)
+            }
             .onChange(of: viewModel.errorMessage) { _, new in
                 settingsOnErrorMessageChange(new)
             }
@@ -151,6 +180,7 @@ struct SettingsView: View {
         .datePickerStyle(.graphical)
         .labelsHidden()
         .tint(Color.appAccent)
+        .colorScheme(.light)
         .accessibilityLabel("Date of Birth")
     }
 
@@ -246,11 +276,14 @@ struct SettingsView: View {
     private var profileScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                avatarCard
                 accountCard
                 personalCard
                 aboutCard
+                feedCacheCard
                 saveCard
                 logoutCard
+                deleteAccountCard
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
@@ -260,20 +293,204 @@ struct SettingsView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
+    private var avatarCard: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                avatarCircle
+                if viewModel.isUploadingAvatar {
+                    Circle()
+                        .fill(Color.appPrimaryText.opacity(0.35))
+                        .frame(width: 96, height: 96)
+                    ProgressView()
+                        .tint(Color.appAccent)
+                }
+            }
+            Menu {
+                PhotosPicker(selection: $photoPickerItem, matching: .images) {
+                    Label("Photo library", systemImage: "photo.on.rectangle")
+                }
+                .disabled(viewModel.isUploadingAvatar)
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button {
+                        showCameraPicker = true
+                    } label: {
+                        Label("Take photo", systemImage: "camera")
+                    }
+                    .disabled(viewModel.isUploadingAvatar)
+                }
+            } label: {
+                Text("Change photo")
+                    .font(.appDisplay(size: 13))
+                    .foregroundStyle(.white)
+            }
+            .disabled(viewModel.isUploadingAvatar)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
+    private var avatarCircle: some View {
+        Group {
+            if let url = resolvedAvatarURL(from: viewModel.avatarUrl) {
+                CachedAsyncImage(
+                    url: url,
+                    logContext: "avatar",
+                    failurePlaceholder: {
+                        AnyView(
+                            ZStack {
+                                Circle()
+                                    .fill(Color.appPrimaryText.opacity(0.08))
+                                avatarPlaceholderSymbol
+                            }
+                            .frame(width: 96, height: 96)
+                        )
+                    },
+                    placeholder: {
+                        AnyView(
+                            ZStack {
+                                Circle()
+                                    .fill(Color.appPrimaryText.opacity(0.08))
+                                ProgressView()
+                                    .tint(Color.appAccent)
+                            }
+                            .frame(width: 96, height: 96)
+                        )
+                    }
+                )
+                .id(url.absoluteString)
+                .frame(width: 96, height: 96)
+                .clipShape(Circle())
+            } else {
+                avatarPlaceholderSymbol
+                    .frame(width: 96, height: 96)
+            }
+        }
+    }
+
+    private var avatarPlaceholderSymbol: some View {
+        Image(systemName: "person.crop.circle.fill")
+            .font(.system(size: 72))
+            .foregroundStyle(Color.white)
+            .accessibilityHidden(true)
+    }
+
+    private func resolvedAvatarURL(from string: String?) -> URL? {
+        guard let raw = string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            settingsAvatarLog.debug("No avatar URL from profile (nil or empty).")
+            return nil
+        }
+        let normalized = raw.normalizedAsHTTPURLString
+        if let u = URL(string: normalized), u.scheme == "http" || u.scheme == "https" {
+            settingsAvatarLog.debug("Resolved avatar URL host=\(u.host ?? "nil", privacy: .public)")
+            return u
+        }
+        var allowed = CharacterSet.urlFragmentAllowed
+        allowed.insert(charactersIn: ":?&=%#")
+        if let encoded = normalized.addingPercentEncoding(withAllowedCharacters: allowed),
+           let u = URL(string: encoded), u.scheme == "http" || u.scheme == "https" {
+            settingsAvatarLog.debug("Avatar URL required percent-encoding before parse.")
+            return u
+        }
+        settingsAvatarLog.error("Avatar URL is not valid HTTP(S): \(raw, privacy: .public)")
+        return nil
+    }
+
+    private func handlePhotoLibrarySelection(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else { return }
+            guard let image = UIImage(data: data) else {
+                await MainActor.run {
+                    viewModel.errorMessage = "Could not load the photo."
+                }
+                await MainActor.run { photoPickerItem = nil }
+                return
+            }
+            await viewModel.uploadAvatarFromUIImage(image)
+        } catch {
+            await MainActor.run {
+                viewModel.errorMessage = error.localizedDescription
+            }
+        }
+        await MainActor.run { photoPickerItem = nil }
+    }
+
     private var accountCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Account")
                 .font(.appDisplay(size: 13))
                 .foregroundStyle(Color.appSecondaryText)
             VStack(alignment: .leading, spacing: 12) {
-                settingsLabeledRow(title: "Email", value: viewModel.email)
+                emailRow
                 Divider().opacity(0.35)
                 settingsLabeledRow(title: "Username", value: viewModel.username)
+                Divider().opacity(0.35)
+                changePasswordRow
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .popArtCardContainer()
+    }
+
+    private var emailRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Email")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
+            HStack(spacing: 8) {
+                Text(viewModel.email)
+                    .font(.appDisplay(size: 17))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                if authViewModel.needsEmailVerification {
+                    Button {
+                        Task { await authViewModel.resendVerificationEmail() }
+                    } label: {
+                        Text(verifyActionLabel)
+                            .font(.appDisplay(size: 12))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(authViewModel.resendState != .idle)
+                } else if !viewModel.email.isEmpty {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Email verified")
+                }
+            }
+        }
+    }
+
+    private var verifyActionLabel: String {
+        switch authViewModel.resendState {
+        case .idle: return "Not verified — resend"
+        case .sending: return "Sending…"
+        case .sent: return "Link sent"
+        }
+    }
+
+    private var changePasswordRow: some View {
+        Button {
+            resignFirstResponder()
+            showChangePassword = true
+        } label: {
+            HStack(alignment: .center) {
+                Text("Change password")
+                    .font(.appDisplay(size: 17))
+                    .foregroundStyle(Color.appPrimaryText)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.appSecondaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Change password")
     }
 
     private var personalCard: some View {
@@ -401,6 +618,32 @@ struct SettingsView: View {
         .popArtCardContainer()
     }
 
+    private var feedCacheCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Feed cache")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
+            Text("Clears the offline feed snapshot and image cache for those items, then reloads the feed in the background with images validated and preloaded.")
+                .font(.appDisplay(size: 15))
+                .foregroundStyle(Color.appSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                resignFirstResponder()
+                feedViewModel.clearPersistedFeedCache()
+            } label: {
+                Text("Clear feed cache")
+                    .font(.appDisplay(size: 17))
+                    .foregroundStyle(Color.appAccent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .popArtCardContainer()
+    }
+
     private var saveCard: some View {
         Button {
             resignFirstResponder()
@@ -441,6 +684,21 @@ struct SettingsView: View {
                 .popArtCardContainer()
         }
         .buttonStyle(.plain)
+    }
+
+    private var deleteAccountCard: some View {
+        Button {
+            resignFirstResponder()
+            showDeleteAccount = true
+        } label: {
+            Text("Delete Account")
+                .font(.appDisplay(size: 15))
+                .foregroundStyle(.red.opacity(0.85))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Permanently deletes your account and data")
     }
 
     private func binding(_ keyPath: ReferenceWritableKeyPath<SettingsViewModel, String>) -> Binding<String> {

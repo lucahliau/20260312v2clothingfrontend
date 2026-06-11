@@ -11,6 +11,15 @@ struct RegisterView: View {
         !password.isEmpty && password == confirmPassword
     }
 
+    private var canSubmitRegister: Bool {
+        let u = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        return email.contains("@")
+            && u.count >= 3
+            && password.count >= 8
+            && passwordsMatch
+            && !authViewModel.isLoading
+    }
+
     var body: some View {
         VStack(spacing: 20) {
             Text("Create Account")
@@ -33,20 +42,26 @@ struct RegisterView: View {
                     .foregroundStyle(Color.appPrimaryText)
                     .authFormFieldChrome()
 
-                SecureField("Password", text: $password)
-                    .textContentType(.newPassword)
+                PasswordField(title: "Password", text: $password, contentType: .newPassword)
                     .foregroundStyle(Color.appPrimaryText)
                     .authFormFieldChrome()
 
-                SecureField("Confirm Password", text: $confirmPassword)
-                    .textContentType(.newPassword)
+                PasswordField(title: "Confirm Password", text: $confirmPassword, contentType: .newPassword)
                     .foregroundStyle(Color.appPrimaryText)
                     .authFormFieldChrome()
 
-                if !confirmPassword.isEmpty && !passwordsMatch {
+                if !password.isEmpty && password.count < 8 {
+                    Text("Password must be at least 8 characters")
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(.red)
+                } else if !confirmPassword.isEmpty && !passwordsMatch {
                     Text("Passwords do not match")
                         .font(.appDisplay(size: 12))
                         .foregroundStyle(.red)
+                } else {
+                    Text("Use at least 8 characters")
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(Color.appSecondaryText)
                 }
 
                 if let error = authViewModel.errorMessage {
@@ -74,7 +89,7 @@ struct RegisterView: View {
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .disabled(email.isEmpty || username.isEmpty || !passwordsMatch || authViewModel.isLoading)
+                .disabled(!canSubmitRegister)
             }
             .padding(20)
             .foregroundStyle(Color.appPrimaryText)

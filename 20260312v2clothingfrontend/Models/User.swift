@@ -9,6 +9,7 @@ struct User: Codable, Sendable {
     var avatarUrl: String?
     var bio: String?
     var onboardingCompleted: Bool
+    var emailVerified: Bool?
     var stylePreferences: [String]
     var favoriteBrands: [String]
     var preferredSizes: [String: String]?
@@ -28,6 +29,7 @@ struct User: Codable, Sendable {
         avatarUrl = try container.decodeIfPresent(String.self, forKey: .avatarUrl)
         bio = try container.decodeIfPresent(String.self, forKey: .bio)
         onboardingCompleted = try container.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
+        emailVerified = try container.decodeIfPresent(Bool.self, forKey: .emailVerified)
         stylePreferences = try container.decodeIfPresent([String].self, forKey: .stylePreferences) ?? []
         favoriteBrands = try container.decodeIfPresent([String].self, forKey: .favoriteBrands) ?? []
         preferredSizes = try container.decodeIfPresent([String: String].self, forKey: .preferredSizes)
@@ -61,6 +63,23 @@ struct AvatarUploadUrlResponse: Codable, Sendable {
     let signedUrl: String
     let publicUrl: String
     let path: String
+}
+
+struct AvatarUploadURLRequest: Encodable, Sendable {
+    var fileExt: String?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(fileExt, forKey: .fileExt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fileExt
+    }
+}
+
+struct AvatarUrlUpdateRequest: Encodable, Sendable {
+    let avatarUrl: String
 }
 
 struct DeviceTokenRequest: Codable, Sendable {

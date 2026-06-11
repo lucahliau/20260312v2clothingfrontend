@@ -1,16 +1,20 @@
+import AuthenticationServices
 import SwiftUI
 
 struct AuthView: View {
+    @Environment(AuthViewModel.self) private var authViewModel
     @State private var isShowingLogin = true
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 32) {
+            VStack(spacing: 28) {
                 if isShowingLogin {
                     LoginView()
                 } else {
                     RegisterView()
                 }
+
+                signInWithAppleSection
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.25)) {
@@ -40,5 +44,34 @@ struct AuthView: View {
             .padding(.bottom, 120)
         }
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var signInWithAppleSection: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 10) {
+                dividerLine
+                Text("or")
+                    .font(.appDisplay(size: 13))
+                    .foregroundStyle(Color.appOnHalftoneSecondary)
+                dividerLine
+            }
+
+            SignInWithAppleButton(isShowingLogin ? .signIn : .signUp) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                Task { await authViewModel.handleAppleSignIn(result) }
+            }
+            .signInWithAppleButtonStyle(.black)
+            .frame(height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .disabled(authViewModel.isLoading)
+        }
+        .padding(.horizontal, 44)
+    }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(Color.appOnHalftoneSecondary.opacity(0.4))
+            .frame(height: 1)
     }
 }

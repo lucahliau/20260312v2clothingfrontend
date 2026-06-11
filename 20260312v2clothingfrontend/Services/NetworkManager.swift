@@ -1,10 +1,16 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted exactly once per real session death: the server rejected our
+    /// refresh token. AuthViewModel listens and flips the auth gate.
+    static let authSessionExpired = Notification.Name("clothedd.authSessionExpired")
+}
+
 enum NetworkError: LocalizedError {
     case invalidURL
     case noData
     case decodingError(Error)
-    case serverError(statusCode: Int, message: String?)
+    case serverError(statusCode: Int, message: String?, code: String?)
     /// Real session death: the server told us our refresh token is invalid.
     /// Clear tokens and force re-login.
     case unauthorized
@@ -18,7 +24,7 @@ enum NetworkError: LocalizedError {
         case .invalidURL: return "Invalid URL."
         case .noData: return "The server returned no data. Try again, or check that the API response matches the app."
         case .decodingError(let err): return "Decoding error: \(err.localizedDescription)"
-        case .serverError(let code, let msg): return "Server error \(code): \(msg ?? "Unknown")"
+        case .serverError(let status, let msg, _): return "Server error \(status): \(msg ?? "Unknown")"
         case .unauthorized: return "Session expired. Please log in again."
         case .transient: return "Couldn't reach the server. Check your connection and try again."
         case .unknown(let err): return err.localizedDescription
@@ -188,9 +194,13 @@ final class NetworkManager {
             throw NetworkError.unauthorized
         default:
             if let apiError = try? JSONDecoder().decode(APIErrorResponse.self, from: data) {
-                throw NetworkError.serverError(statusCode: http.statusCode, message: apiError.error.message)
+                throw NetworkError.serverError(
+                    statusCode: http.statusCode,
+                    message: apiError.error.message,
+                    code: apiError.error.code
+                )
             }
-            throw NetworkError.serverError(statusCode: http.statusCode, message: nil)
+            throw NetworkError.serverError(statusCode: http.statusCode, message: nil, code: nil)
         }
     }
 
@@ -198,7 +208,7 @@ final class NetworkManager {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8)
-            throw NetworkError.serverError(statusCode: http.statusCode, message: message)
+            throw NetworkError.serverError(statusCode: http.statusCode, message: message, code: nil)
         }
     }
 
@@ -239,6 +249,7 @@ final class NetworkManager {
         if http.statusCode == 401 {
             // Server explicitly rejected the refresh token. Real session death.
             KeychainManager.clearTokens()
+            NotificationCenter.default.post(name: .authSessionExpired, object: nil)
             throw NetworkError.unauthorized
         }
         if !(200..<300).contains(http.statusCode) {
