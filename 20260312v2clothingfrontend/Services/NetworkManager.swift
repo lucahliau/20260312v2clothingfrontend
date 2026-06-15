@@ -225,8 +225,13 @@ final class NetworkManager {
 
     private func doRefresh() async throws {
         guard let refreshToken = KeychainManager.read(key: KeychainManager.refreshTokenKey) else {
-            // No refresh token at all — definitely a logged-out state.
+            // No refresh token at all — definitely a logged-out state. Treat it
+            // exactly like a server-rejected refresh below: clear tokens AND flip
+            // the auth gate, so an expired access token with no way to refresh
+            // bounces straight to the login screen instead of leaving the user
+            // stuck in a dead, logged-out app.
             KeychainManager.clearTokens()
+            NotificationCenter.default.post(name: .authSessionExpired, object: nil)
             throw NetworkError.unauthorized
         }
 

@@ -11,6 +11,12 @@ struct RegisterView: View {
         !password.isEmpty && password == confirmPassword
     }
 
+    private var agreementText: AttributedString {
+        let markdown = "By signing up you agree to our [Terms of Service](\(LegalLinks.termsOfService.absoluteString)) and [Privacy Policy](\(LegalLinks.privacyPolicy.absoluteString))."
+        return (try? AttributedString(markdown: markdown))
+            ?? AttributedString("By signing up you agree to our Terms of Service and Privacy Policy.")
+    }
+
     private var canSubmitRegister: Bool {
         let u = username.trimmingCharacters(in: .whitespacesAndNewlines)
         return email.contains("@")
@@ -90,6 +96,13 @@ struct RegisterView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .disabled(!canSubmitRegister)
+
+                Text(agreementText)
+                    .font(.appDisplay(size: 12))
+                    .foregroundStyle(Color.appSecondaryText)
+                    .tint(Color.appAccent)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
             }
             .padding(20)
             .foregroundStyle(Color.appPrimaryText)

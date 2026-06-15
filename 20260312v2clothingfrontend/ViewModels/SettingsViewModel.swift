@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 @Observable
 final class SettingsViewModel {
@@ -11,9 +12,11 @@ final class SettingsViewModel {
     var location: String = ""
     var email: String = ""
     var username: String = ""
+    var avatarUrl: String?
 
     var isLoading = false
     var isSaving = false
+    var isUploadingAvatar = false
     var errorMessage: String?
     var showSaveConfirmation = false
 
@@ -71,6 +74,14 @@ final class SettingsViewModel {
         }
     }
 
+    /// Push a fresh `User` (e.g. the onboarding save response) into the profile
+    /// state without another network round trip. Marks the profile as loaded so
+    /// gender-dependent consumers (Feed default filter) react immediately.
+    func applyOnboardedUser(_ user: User) {
+        apply(user: user)
+        lastProfileLoadAt = Date()
+    }
+
     private func apply(user: User) {
         firstName = user.firstName ?? ""
         lastName = user.lastName ?? ""
@@ -79,8 +90,32 @@ final class SettingsViewModel {
         location = user.location ?? ""
         email = user.email
         username = user.username
+        avatarUrl = user.avatarUrl
         if let dob = user.dateOfBirth {
             dateOfBirth = Self.dobFormatter.date(from: dob)
+        }
+    }
+
+    func uploadAvatarFromUIImage(_ image: UIImage) async {
+        guard let data = AvatarImageProcessor.jpegDataForUpload(from: image) else {
+            errorMessage = "Could not process the image."
+            return
+        }
+        await uploadAvatar(imageData: data, fileExt: "jpg", contentType: "image/jpeg")
+    }
+
+    private func uploadAvatar(imageData: Data, fileExt: String, contentType: String) async {
+        isUploadingAvatar = true
+        errorMessage = nil
+        defer { isUploadingAvatar = false }
+        do {
+            let slot = try await UserService.getAvatarUploadUrl(fileExt: fileExt)
+            try await NetworkManager.shared.putBytes(imageData, to: slot.signedUrl, contentType: contentType)
+            let user = try await UserService.updateAvatarUrl(slot.publicUrl)
+            apply(user: user)
+            lastProfileLoadAt = Date()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

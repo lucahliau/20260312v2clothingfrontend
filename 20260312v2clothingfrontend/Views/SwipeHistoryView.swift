@@ -156,13 +156,13 @@ private struct SwipeHistoryRowView: View {
         HStack(alignment: .center, spacing: 14) {
             thumbnail
             VStack(alignment: .leading, spacing: 5) {
-                Text(record.item?.name ?? "Item")
+                Text(record.item?.name.displayNormalizedTitle ?? "Item")
                     .font(.appDisplay(size: 17))
                     .foregroundStyle(Color.appPrimaryText)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                 if let brand = record.item?.brand, !brand.isEmpty {
-                    Text(brand)
+                    Text(brand.displayNormalizedTitle)
                         .font(.appDisplay(size: 15))
                         .foregroundStyle(Color.appSecondaryText)
                         .lineLimit(1)
@@ -215,11 +215,6 @@ private struct SwipeHistoryRowView: View {
     }
 
     private func badgeColor(_ action: SwipeType) -> Color {
-        switch action {
-        case .LOVE: return .red
-        case .LIKE: return .green
-        case .DISLIKE: return .orange
-        case .NEUTRAL: return .gray
-        }
+        action.swipeChromeColor
     }
 }

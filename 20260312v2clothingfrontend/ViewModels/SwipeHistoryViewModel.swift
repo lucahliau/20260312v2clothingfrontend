@@ -42,8 +42,21 @@ final class SwipeHistoryViewModel {
             records = warm.records
             isPreviewOnly = warm.isPreviewOnly
             lastHistoryLoadAt = warm.savedAt
+            // This init runs during MainTabView construction (inside the first
+            // frame) — warm images asynchronously, never on the launch frame.
             let urls = Self.urlsForPrefetch(from: warm.records, max: 24)
-            ImageCacheService.shared.warmMemoryFromDisk(urls: urls)
+            Task(priority: .utility) {
+                await ImageCacheService.shared.warmMemoryFromDisk(urls: urls)
+            }
+            Task { await self.applyRenderableRecordFilter() }
+        }
+    }
+
+    private func applyRenderableRecordFilter() async {
+        let filtered = await ItemImageDisplayability.filterSwipeRecords(records)
+        await MainActor.run {
+            self.records = filtered
+            self.persistSwipeWarmCache()
         }
     }
 
@@ -91,7 +104,8 @@ final class SwipeHistoryViewModel {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            records = try await SwipeService.fetchSwipeHistory(limit: Self.previewLimit)
+            let raw = try await SwipeService.fetchSwipeHistory(limit: Self.previewLimit)
+            records = await ItemImageDisplayability.filterSwipeRecords(raw)
             isPreviewOnly = true
             lastHistoryLoadAt = Date()
             persistSwipeWarmCache()
@@ -106,7 +120,8 @@ final class SwipeHistoryViewModel {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            records = try await SwipeService.fetchSwipeHistory(limit: Self.fullLimit)
+            let raw = try await SwipeService.fetchSwipeHistory(limit: Self.fullLimit)
+            records = await ItemImageDisplayability.filterSwipeRecords(raw)
             isPreviewOnly = false
             lastHistoryLoadAt = Date()
             persistSwipeWarmCache()
@@ -122,7 +137,8 @@ final class SwipeHistoryViewModel {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            records = try await SwipeService.fetchSwipeHistory(limit: Self.fullLimit)
+            let raw = try await SwipeService.fetchSwipeHistory(limit: Self.fullLimit)
+            records = await ItemImageDisplayability.filterSwipeRecords(raw)
             isPreviewOnly = false
             lastHistoryLoadAt = Date()
             persistSwipeWarmCache()
@@ -144,7 +160,8 @@ final class SwipeHistoryViewModel {
     private func refreshHistorySilently() async {
         do {
             let limit = isPreviewOnly ? Self.previewLimit : Self.fullLimit
-            records = try await SwipeService.fetchSwipeHistory(limit: limit)
+            let raw = try await SwipeService.fetchSwipeHistory(limit: limit)
+            records = await ItemImageDisplayability.filterSwipeRecords(raw)
             lastHistoryLoadAt = Date()
             persistSwipeWarmCache()
             prefetchHistoryImages()

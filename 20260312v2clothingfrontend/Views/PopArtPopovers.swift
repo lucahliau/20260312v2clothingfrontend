@@ -131,9 +131,12 @@ struct PopArtPrimaryActionButton: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
             .padding(.horizontal, 12)
+            // Card chrome lives INSIDE the button label and the whole card is
+            // the hit area — taps on the white background work, not just text.
+            .popArtCardContainer()
+            .contentShape(RoundedRectangle(cornerRadius: PopArtCardStyle.cornerRadius))
         }
         .buttonStyle(.plain)
-        .popArtCardContainer()
     }
 }
 
@@ -171,11 +174,13 @@ struct PopArtModalDestructiveButton: View {
 
 // MARK: - Preset alerts
 
-/// Single primary “OK” action (accent).
+/// Single primary “OK” action (accent). Optionally add a secondary “Retry” for recoverable flows.
 struct PopArtMessageAlert: View {
     let title: String
     let message: String
     var onDismiss: () -> Void
+    var retryTitle: String? = nil
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         PopArtCenteredModal(onTapOutside: onDismiss) {
@@ -183,7 +188,14 @@ struct PopArtMessageAlert: View {
                 VStack(spacing: 18) {
                     PopArtModalTitle(title)
                     PopArtModalMessage(message)
-                    PopArtModalPrimaryButton(title: "OK", action: onDismiss)
+                    if let retryTitle, let onRetry {
+                        VStack(spacing: 8) {
+                            PopArtModalPrimaryButton(title: retryTitle, action: onRetry)
+                            PopArtModalSecondaryButton(title: "OK", action: onDismiss)
+                        }
+                    } else {
+                        PopArtModalPrimaryButton(title: "OK", action: onDismiss)
+                    }
                 }
             }
         }
@@ -243,7 +255,7 @@ struct PopArtSelectionRow: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(isSelected ? Color.appAccent : Color.black.opacity(0.12), lineWidth: isSelected ? 3 : 1)
+                    .stroke(isSelected ? Color.appAccent : Color.appInk.opacity(0.12), lineWidth: isSelected ? 3 : 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }

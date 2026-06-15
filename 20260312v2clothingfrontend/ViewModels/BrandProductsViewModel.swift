@@ -5,14 +5,14 @@ import Observation
 @MainActor
 final class BrandProductsViewModel {
     let brandName: String
-    private let pageSize = 24
 
+    /// Items currently rendered, after client-side sort.
     var items: [Item] = []
     var isLoading = false
     var isLoadingMore = false
     var errorMessage: String?
-    private var nextPage = 1
-    private var hasMorePages = true
+    /// Non-blocking error for "next page failed" — surfaced as a retry toast, not a full-screen alert.
+    var paginationErrorMessage: String?
 
     /// Distinct labels (subcategory preferred, else category) seen in loaded data.
     private(set) var facetCategories: [String] = []
@@ -20,12 +20,58 @@ final class BrandProductsViewModel {
 
     var selectedCategory: String? = nil
     var selectedGender: String? = nil
+    var selectedPriceRange: BrandPriceRange? = nil
+    var sortOption: BrandSortOption = .featured
+
+    /// Page size for `/items` requests. Small enough for a fast first paint, large enough
+    /// to avoid hammering pagination on long catalogs.
+    private let pageSize = 60
+    /// Trigger `loadMoreIfNeeded` / prefetch when a cell within this many rows of the end appears.
+    private let nearEndWindow = 12
+
+    private var currentPage = 1
+    private(set) var hasMore = false
+
+    /// Server-order items, before sort is applied. Sort runs over this snapshot so toggling
+    /// sort options is deterministic and cheap.
+    private var rawItems: [Item] = []
+
+    /// Whether the user has saved (hearted) this brand.
+    private(set) var isSavedBrand = false
+    private var isSavingBrand = false
 
     init(brandName: String) {
         self.brandName = brandName
     }
 
-    /// Prefer subcategory for “socks / t‑shirt” style facets; fall back to category.
+    /// Fetches whether this brand is in the user's saved brands. Failures are
+    /// silent — the heart just starts unsaved.
+    func loadSavedBrandState() async {
+        do {
+            let favorites = try await BrandService.fetchFavoriteBrands()
+            isSavedBrand = favorites.contains {
+                $0.brand.caseInsensitiveCompare(brandName) == .orderedSame
+            }
+        } catch {
+            // Non-fatal: keep the default unsaved state.
+        }
+    }
+
+    func toggleSavedBrand() async {
+        guard !isSavingBrand else { return }
+        isSavingBrand = true
+        defer { isSavingBrand = false }
+        let target = !isSavedBrand
+        isSavedBrand = target
+        do {
+            try await BrandService.setFavoriteBrand(brandName, favorite: target)
+        } catch {
+            isSavedBrand = !target
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Prefer subcategory for "socks / t-shirt" style facets; fall back to category.
     static func facetCategoryLabel(for item: Item) -> String? {
         if let s = item.subcategory?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return s }
         if let c = item.category?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty { return c }
@@ -47,31 +93,16 @@ final class BrandProductsViewModel {
         facetGenders = gens.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    /// One-time wide fetch to populate category/gender chips for this brand (does not replace `items`).
-    func loadFacetsProbe() async {
-        do {
-            let response = try await ItemService.fetchItemsPage(
-                page: 1,
-                limit: 100,
-                category: nil,
-                brand: brandName,
-                search: nil,
-                gender: nil,
-                productType: nil
-            )
-            mergeFacets(from: response.items)
-        } catch {
-            // Ignore: filters still work from facets merged during normal paging.
-        }
+    private func applySort() {
+        items = sortOption.apply(to: rawItems)
     }
 
     func loadInitial() async {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
+        paginationErrorMessage = nil
         defer { isLoading = false }
-        nextPage = 1
-        hasMorePages = true
         do {
             let response = try await ItemService.fetchItemsPage(
                 page: 1,
@@ -80,26 +111,85 @@ final class BrandProductsViewModel {
                 brand: brandName,
                 search: nil,
                 gender: selectedGender,
-                productType: nil
+                productType: nil,
+                minPrice: selectedPriceRange?.minPrice,
+                maxPrice: selectedPriceRange?.maxPrice
             )
-            items = response.items
+            rawItems = response.items
+            currentPage = 1
+            hasMore = (response.pagination?.totalPages ?? 1) > 1
             mergeFacets(from: response.items)
-            nextPage = 2
-            if let totalPages = response.pagination?.totalPages, let p = response.pagination?.page {
-                hasMorePages = p < totalPages
-            } else {
-                hasMorePages = response.items.count >= pageSize
-            }
+            applySort()
+            BrandImagePrefetcher.prefetch(items: response.items)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    func loadMoreIfNeeded(currentIndex: Int) async {
+        guard !isLoading, !isLoadingMore, hasMore else { return }
+        guard currentIndex >= items.count - nearEndWindow else { return }
+        await loadNextPage()
+    }
+
+    private func loadNextPage() async {
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        let nextPage = currentPage + 1
+        do {
+            let response = try await ItemService.fetchItemsPage(
+                page: nextPage,
+                limit: pageSize,
+                category: selectedCategory,
+                brand: brandName,
+                search: nil,
+                gender: selectedGender,
+                productType: nil,
+                minPrice: selectedPriceRange?.minPrice,
+                maxPrice: selectedPriceRange?.maxPrice
+            )
+            // Dedupe by id in case the backend ever returns overlap.
+            let known = Set(rawItems.map(\.id))
+            let fresh = response.items.filter { !known.contains($0.id) }
+            rawItems.append(contentsOf: fresh)
+            currentPage = nextPage
+            hasMore = (response.pagination?.totalPages ?? nextPage) > nextPage
+            mergeFacets(from: fresh)
+            applySort()
+            BrandImagePrefetcher.prefetch(items: fresh)
+        } catch {
+            paginationErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Hand the next-window items to the prefetcher when the user is nearing the bottom.
+    func prefetchUpcoming(currentIndex: Int) {
+        guard currentIndex >= items.count - nearEndWindow, currentIndex < items.count else { return }
+        let upcoming = Array(items.suffix(from: currentIndex))
+        BrandImagePrefetcher.prefetch(items: upcoming, maxURLs: 18)
+    }
+
+    /// Retry the page that failed (called from the bottom error toast).
+    func retryPagination() async {
+        guard paginationErrorMessage != nil else { return }
+        paginationErrorMessage = nil
+        await loadNextPage()
+    }
+
+    /// Drops an item whose primary AND fallback URLs both 404'd. Called from `CachedAsyncImage.onUnrecoverableHTTP404`.
+    /// The caller is responsible for not invoking this on the item currently shown in the detail sheet.
+    func removeItem(id: String) {
+        rawItems.removeAll { $0.id == id }
+        items.removeAll { $0.id == id }
+    }
+
     /// Clears items and reloads after filter change.
     func reloadWithCurrentFilters() async {
+        rawItems = []
         items = []
-        nextPage = 1
-        hasMorePages = true
+        currentPage = 1
+        hasMore = false
+        paginationErrorMessage = nil
         await loadInitial()
     }
 
@@ -117,35 +207,15 @@ final class BrandProductsViewModel {
         Task { await reloadWithCurrentFilters() }
     }
 
-    func loadMoreIfNeeded() async {
-        guard hasMorePages, !isLoading, !isLoadingMore else { return }
-        isLoadingMore = true
-        errorMessage = nil
-        defer { isLoadingMore = false }
-        do {
-            let response = try await ItemService.fetchItemsPage(
-                page: nextPage,
-                limit: pageSize,
-                category: selectedCategory,
-                brand: brandName,
-                search: nil,
-                gender: selectedGender,
-                productType: nil
-            )
-            if response.items.isEmpty {
-                hasMorePages = false
-                return
-            }
-            items.append(contentsOf: response.items)
-            mergeFacets(from: response.items)
-            nextPage += 1
-            if let totalPages = response.pagination?.totalPages, let p = response.pagination?.page {
-                hasMorePages = p < totalPages
-            } else {
-                hasMorePages = response.items.count >= pageSize
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    func setPriceFilter(_ value: BrandPriceRange?) {
+        guard value != selectedPriceRange else { return }
+        selectedPriceRange = value
+        Task { await reloadWithCurrentFilters() }
+    }
+
+    func setSortOption(_ value: BrandSortOption) {
+        guard value != sortOption else { return }
+        sortOption = value
+        applySort()
     }
 }

@@ -1,12 +1,51 @@
 import Foundation
 import Observation
 
+@MainActor
+private final class InitialFeedLoadCoordinator {
+    private var inflight: Task<Void, Never>?
+
+    func cancel() {
+        inflight?.cancel()
+        inflight = nil
+    }
+
+    func run(_ body: @escaping @MainActor () async -> Void) async {
+        if let t = inflight {
+            await t.value
+            return
+        }
+        let t = Task { await body() }
+        inflight = t
+        await t.value
+        inflight = nil
+    }
+}
+
+@MainActor
 @Observable
 final class FeedViewModel {
+    private static let feedSwipeHintSeenKey = "feedSwipeHintSeen"
+    private static let feedGenderFilterUserCustomizedKey = "feedGenderFilterUserCustomized"
+
     var items: [Item] = []
+    /// Per-card recommendation metadata keyed by item id. Populated whenever
+    /// the feed is loaded/appended from the network. Warm-cached items may
+    /// not have a match entry (badge simply hides for those).
+    private(set) var matchesByItemId: [String: FeedMatch] = [:]
     var currentIndex = 0
     var isLoading = false
     var errorMessage: String?
+
+    /// Lookup helper for views: returns `nil` when the item has no match
+    /// metadata (e.g. hydrated from warm cache before the new fields were
+    /// stored, or older clients).
+    func match(for itemId: String) -> FeedMatch? {
+        matchesByItemId[itemId]
+    }
+
+    /// Instruction caption under the feed card; hidden after first successful swipe (persisted).
+    private(set) var showFeedSwipeHint: Bool
 
     /// Set after first successful feed fetch (including empty); used for stale checks.
     private(set) var lastFeedLoadAt: Date?
@@ -16,21 +55,34 @@ final class FeedViewModel {
 
     private let staleDuration: TimeInterval = 90
 
-    /// Next N feed cards to warm (top + stacked + buffer).
-    private let imagePrefetchWindow = 5
+    /// Feed page size. Bigger pages mean the (sometimes slow) personalized feed
+    /// query runs far less often, so the deck rarely runs dry mid-swipe.
+    private static let feedBatchLimit = 50
+
+    /// Fetch the next page once the deck drops this low — early enough to hide a
+    /// slow fetch behind the cards the user still has left to swipe.
+    private static let loadMoreThreshold = 20
+
+    /// Next N feed cards to warm (top + stacked + buffer). Also determines how
+    /// many of the warm-cached cards have their images on disk for next launch.
+    private let imagePrefetchWindow = 12
+
+    /// Single-flight guard so concurrent swipes never fire duplicate page fetches.
+    private var isLoadingMore = false
 
     private let initialWarmLock = NSLock()
     private var initialWarmRefreshTask: Task<Void, Never>?
 
+    private let initialFeedLoadCoordinator = InitialFeedLoadCoordinator()
+
     init() {
-        if let warm = FeedWarmCache.loadIfValid(
-            productTypes: selectedProductTypes,
-            genders: selectedGenders
-        ) {
-            let urls = Self.feedWarmImageURLs(for: warm)
-            ImageCacheService.shared.warmMemoryFromDisk(urls: urls)
-            items = warm
-        }
+        showFeedSwipeHint = !UserDefaults.standard.bool(forKey: Self.feedSwipeHintSeenKey)
+    }
+
+    private func markFeedSwipeHintSeenIfNeeded() {
+        guard showFeedSwipeHint else { return }
+        UserDefaults.standard.set(true, forKey: Self.feedSwipeHintSeenKey)
+        showFeedSwipeHint = false
     }
 
     var currentItem: Item? {
@@ -46,7 +98,17 @@ final class FeedViewModel {
     func loadIfNeeded() async {
         if lastFeedLoadAt == nil {
             if items.isEmpty {
-                await loadItemsInitial()
+                isLoading = true
+                if hydrateFromWarmCacheIfNeeded() {
+                    isLoading = false
+                    initialWarmLock.lock()
+                    if initialWarmRefreshTask == nil {
+                        initialWarmRefreshTask = Task { await self.refreshInitialFromWarmCache() }
+                    }
+                    initialWarmLock.unlock()
+                } else {
+                    await loadItemsInitial()
+                }
             } else {
                 initialWarmLock.lock()
                 if initialWarmRefreshTask == nil {
@@ -65,33 +127,76 @@ final class FeedViewModel {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            items = try await ItemService.fetchFeedItems(limit: 20, genders: genders, productTypes: productTypes)
-            currentIndex = 0
-            lastFeedLoadAt = Date()
-            scheduleFeedImagePrefetch()
-            persistFeedWarmCache()
+            try await fetchAndApplyFeedFromNetwork()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    private func fetchAndApplyFeedFromNetwork() async throws {
+        let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
+        let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
+        let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
+        items = result.items
+        replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
+        currentIndex = 0
+        lastFeedLoadAt = Date()
+        scheduleFeedImagePrefetch()
+        persistFeedWarmCache()
+    }
+
+    /// Replace the match map with the fresh batch; drop entries for items no
+    /// longer in the stack to keep memory bounded.
+    private func replaceMatches(with matches: [FeedMatch], retainingIds: Set<String>) {
+        var next: [String: FeedMatch] = [:]
+        for m in matches where retainingIds.contains(m.itemId) {
+            next[m.itemId] = m
+        }
+        matchesByItemId = next
+    }
+
+    /// Merge new matches into the map without clobbering existing entries
+    /// (used by paginated loads and silent refreshes).
+    private func mergeMatches(_ matches: [FeedMatch]) {
+        for m in matches { matchesByItemId[m.itemId] = m }
+    }
+
     private func loadItemsInitial() async {
+        await initialFeedLoadCoordinator.run {
+            await self.performInitialFeedLoad()
+        }
+    }
+
+    private func performInitialFeedLoad() async {
+        guard !Task.isCancelled else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            items = try await ItemService.fetchFeedItems(limit: 20, genders: genders, productTypes: productTypes)
-            currentIndex = 0
-            lastFeedLoadAt = Date()
-            scheduleFeedImagePrefetch()
-            persistFeedWarmCache()
+            guard !Task.isCancelled else { return }
+            try await fetchAndApplyFeedFromNetwork()
         } catch {
+            if Task.isCancelled { return }
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func hydrateFromWarmCacheIfNeeded() -> Bool {
+        guard let warm = FeedWarmCache.loadIfValid(
+            productTypes: selectedProductTypes,
+            genders: selectedGenders
+        ) else { return false }
+        guard !warm.isEmpty else { return false }
+        // Async: the first card may show its placeholder for ~one disk read
+        // instead of blocking the launch frame on file I/O + decode.
+        let urls = Self.feedWarmImageURLs(for: warm)
+        Task(priority: .userInitiated) {
+            await ImageCacheService.shared.warmMemoryFromDisk(urls: urls)
+        }
+        items = warm
+        currentIndex = 0
+        scheduleFeedImagePrefetch()
+        return true
     }
 
     /// First launch after warm JSON hydrate: fetch fresh feed without blocking on the loading skeleton.
@@ -104,8 +209,9 @@ final class FeedViewModel {
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let fetched = try await ItemService.fetchFeedItems(limit: 20, genders: genders, productTypes: productTypes)
-            applyFetchedFeed(fetched)
+            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
+            applyFetchedFeed(result.items)
+            mergeMatches(result.matches)
             lastFeedLoadAt = Date()
             scheduleFeedImagePrefetch()
             persistFeedWarmCache()
@@ -117,7 +223,8 @@ final class FeedViewModel {
     /// Merges a network feed with the current stack so the visible top card stays until swiped.
     private func applyFetchedFeed(_ fetched: [Item]) {
         guard !fetched.isEmpty else { return }
-        guard currentIndex < items.count else {
+        let pinnedId = currentIndex < items.count ? items[currentIndex].id : nil
+        if currentIndex >= items.count {
             items = fetched
             currentIndex = 0
             return
@@ -136,6 +243,12 @@ final class FeedViewModel {
                 tail.append(item)
             }
             items = prefix + [pinnedItem] + tail
+            currentIndex = idx
+        }
+        if let id = pinnedId, let i = items.firstIndex(where: { $0.id == id }) {
+            currentIndex = i
+        } else {
+            currentIndex = 0
         }
     }
 
@@ -149,7 +262,7 @@ final class FeedViewModel {
 
     private static func feedWarmImageURLs(for items: [Item]) -> [URL] {
         var urls: [URL] = []
-        for item in items.prefix(5) {
+        for item in items.prefix(12) {
             guard let pair = item.imageUrlPairs.first else { continue }
             if let u = URL(string: pair.primary) { urls.append(u) }
             if let fb = pair.fallback, let u = URL(string: fb) { urls.append(u) }
@@ -170,8 +283,9 @@ final class FeedViewModel {
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let fetched = try await ItemService.fetchFeedItems(limit: 20, genders: genders, productTypes: productTypes)
-            applyFetchedFeed(fetched)
+            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
+            applyFetchedFeed(result.items)
+            mergeMatches(result.matches)
             lastFeedLoadAt = Date()
             scheduleFeedImagePrefetch()
             persistFeedWarmCache()
@@ -190,6 +304,7 @@ final class FeedViewModel {
     }
 
     func toggleGender(_ gender: GenderFilter) {
+        UserDefaults.standard.set(true, forKey: Self.feedGenderFilterUserCustomizedKey)
         if selectedGenders.contains(gender) {
             selectedGenders.remove(gender)
         } else {
@@ -198,33 +313,105 @@ final class FeedViewModel {
         Task { await loadItems() }
     }
 
+    /// When `false`, `selectedGenders` follows profile (`User.gender`) until the user edits gender filters in the sheet.
+    private var feedGenderFilterUserCustomized: Bool {
+        UserDefaults.standard.bool(forKey: Self.feedGenderFilterUserCustomizedKey)
+    }
+
+    /// Returns `true` when `selectedGenders` changed and the caller should refetch (e.g. `loadItems()`).
+    @discardableResult
+    func applyDefaultGenderFilterFromProfileIfNeeded(profileGender: String?) -> Bool {
+        guard !feedGenderFilterUserCustomized else { return false }
+        let next = GenderFilter.defaultSelection(forProfileGender: profileGender)
+        guard next != selectedGenders else { return false }
+        selectedGenders = next
+        return true
+    }
+
+    /// Drops the persisted feed warm cache, removes cached images for current feed URLs, resets in-memory feed state, then refetches and preloads in the background.
+    func clearPersistedFeedCache() {
+        initialWarmLock.lock()
+        initialWarmRefreshTask?.cancel()
+        initialWarmRefreshTask = nil
+        initialWarmLock.unlock()
+
+        for item in items {
+            guard let pair = item.imageUrlPairs.first else { continue }
+            if let u = URL(string: pair.primary) {
+                ImageCacheService.shared.removeCachedEntry(for: u)
+            }
+            if let fb = pair.fallback, let u = URL(string: fb) {
+                ImageCacheService.shared.removeCachedEntry(for: u)
+            }
+        }
+
+        FeedWarmCache.clear()
+        items = []
+        matchesByItemId = [:]
+        currentIndex = 0
+        lastFeedLoadAt = nil
+        errorMessage = nil
+
+        Task { @MainActor in
+            await initialFeedLoadCoordinator.cancel()
+            await initialFeedLoadCoordinator.run {
+                await self.performInitialFeedLoad()
+            }
+        }
+    }
+
+    /// Removes the current top card when its images fail with HTTP 404 (after primary + fallback). Clears cached entries for those URLs and persists the feed.
+    func removeCurrentFeedItemIfBroken404(matchingItemId itemId: String) {
+        guard currentIndex < items.count, items[currentIndex].id == itemId else { return }
+        let item = items[currentIndex]
+        if let pair = item.imageUrlPairs.first {
+            if let u = URL(string: pair.primary) {
+                ImageCacheService.shared.removeCachedEntry(for: u)
+            }
+            if let fb = pair.fallback, let u = URL(string: fb) {
+                ImageCacheService.shared.removeCachedEntry(for: u)
+            }
+        }
+        items.remove(at: currentIndex)
+        matchesByItemId.removeValue(forKey: itemId)
+        persistFeedWarmCache()
+        scheduleFeedImagePrefetch()
+        Task { await loadMoreIfNeeded() }
+    }
+
     @discardableResult
     func recordSwipe(item: Item, action: SwipeType) async -> Bool {
         let itemId = item.id
         currentIndex += 1
-        await loadMoreIfNeeded()
+        markFeedSwipeHintSeenIfNeeded()
         scheduleFeedImagePrefetch()
-        do {
-            try await SwipeService.recordSwipe(itemId: itemId, type: action)
-            return true
-        } catch {
-            currentIndex -= 1
-            errorMessage = error.localizedDescription
-            return false
-        }
+        // Fire-and-forget: enqueue locally (deduped + persisted) and let the
+        // background queue batch + retry. The swipe never blocks the UI, never
+        // rolls the card back, and never surfaces an error — so fast swiping
+        // stays smooth even when the network is slow or rate-limited.
+        Task { await PendingSwipeQueue.shared.enqueue(itemId: itemId, action: action) }
+        // Keep the deck full without making this swipe wait on the page fetch.
+        Task { await loadMoreIfNeeded() }
+        return true
     }
 
     func loadMoreIfNeeded() async {
         let remaining = items.count - currentIndex
-        guard remaining < 5 else { return }
+        guard remaining < Self.loadMoreThreshold else { return }
+        guard !isLoadingMore else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let more = try await ItemService.fetchFeedItems(limit: 20, genders: genders, productTypes: productTypes)
-            guard !more.isEmpty else { return }
+            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
+            guard !result.items.isEmpty else { return }
             let existingIds = Set(items.map(\.id))
-            let newItems = more.filter { !existingIds.contains($0.id) }
+            let newItems = result.items.filter { !existingIds.contains($0.id) }
             items.append(contentsOf: newItems)
+            // Only keep matches for items we actually appended.
+            let appendedIds = Set(newItems.map(\.id))
+            mergeMatches(result.matches.filter { appendedIds.contains($0.itemId) })
             scheduleFeedImagePrefetch()
         } catch {
             // Silent fail for prefetch

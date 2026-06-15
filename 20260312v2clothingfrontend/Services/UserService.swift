@@ -28,10 +28,20 @@ enum UserService {
         )
     }
 
-    static func getAvatarUploadUrl() async throws -> AvatarUploadUrlResponse {
-        try await NetworkManager.shared.request(
+    static func getAvatarUploadUrl(fileExt: String? = nil) async throws -> AvatarUploadUrlResponse {
+        let body = AvatarUploadURLRequest(fileExt: fileExt)
+        return try await NetworkManager.shared.request(
             "/users/me/avatar-upload-url",
-            method: "POST"
+            method: "POST",
+            body: body
+        )
+    }
+
+    static func updateAvatarUrl(_ publicUrl: String) async throws -> User {
+        try await NetworkManager.shared.request(
+            "/users/me",
+            method: "PATCH",
+            body: AvatarUrlUpdateRequest(avatarUrl: publicUrl)
         )
     }
 

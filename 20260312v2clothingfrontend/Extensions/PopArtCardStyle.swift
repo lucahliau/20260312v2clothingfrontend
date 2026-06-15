@@ -1,25 +1,28 @@
 import SwiftUI
 
-/// Shared pop-art card chrome (matches swipe cards): thick black stroke + offset extrusion.
+/// Shared card chrome (matches swipe cards): outline + offset extrusion.
+/// Values forward to the active `Theme` so cards re-theme on Appearance switch;
+/// the Pop Art preset keeps the original thick-black-stroke + 8pt extrusion look.
 enum PopArtCardStyle {
-    static let cornerRadius: CGFloat = 20
-    static let strokeWidth: CGFloat = 4
-    static let shadowOffset: CGFloat = 8
+    static var cornerRadius: CGFloat { Theme.current.cardCornerRadius }
+    static var strokeWidth: CGFloat { Theme.current.cardStrokeWidth }
+    static var shadowOffset: CGFloat { Theme.current.cardShadowOffset }
 }
 
 extension View {
-    /// White card with black outline and offset black “3D” layer behind.
+    /// Card with themed outline and offset "3D" layer behind.
     func popArtCardContainer() -> some View {
-        background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: PopArtCardStyle.cornerRadius))
+        let theme = Theme.current
+        return background(theme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius))
             .overlay(
-                RoundedRectangle(cornerRadius: PopArtCardStyle.cornerRadius)
-                    .stroke(Color.black, lineWidth: PopArtCardStyle.strokeWidth)
+                RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                    .stroke(theme.ink, lineWidth: theme.cardStrokeWidth)
             )
             .background(
-                RoundedRectangle(cornerRadius: PopArtCardStyle.cornerRadius)
-                    .fill(Color.black)
-                    .offset(x: PopArtCardStyle.shadowOffset, y: PopArtCardStyle.shadowOffset)
+                RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                    .fill(theme.shadowInk)
+                    .offset(x: theme.cardShadowOffset, y: theme.cardShadowOffset)
             )
     }
 

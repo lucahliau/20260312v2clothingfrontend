@@ -9,7 +9,9 @@ enum ItemService {
         brand: String? = nil,
         search: String? = nil,
         gender: String? = nil,
-        productType: String? = nil
+        productType: String? = nil,
+        minPrice: Double? = nil,
+        maxPrice: Double? = nil
     ) async throws -> PaginatedItemsResponse {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "page", value: "\(page)"),
@@ -20,6 +22,8 @@ enum ItemService {
         if let search, !search.isEmpty { queryItems.append(URLQueryItem(name: "search", value: search)) }
         if let gender, !gender.isEmpty { queryItems.append(URLQueryItem(name: "gender", value: gender)) }
         if let productType, !productType.isEmpty { queryItems.append(URLQueryItem(name: "productType", value: productType)) }
+        if let minPrice { queryItems.append(URLQueryItem(name: "minPrice", value: "\(Int(minPrice))")) }
+        if let maxPrice { queryItems.append(URLQueryItem(name: "maxPrice", value: "\(Int(maxPrice))")) }
 
         return try await NetworkManager.shared.request(
             "/items",
@@ -46,13 +50,28 @@ enum ItemService {
         return response.items
     }
 
-    /// Fetches all items by paginating through every page.
-    static func fetchAllItems() async throws -> [Item] {
+    /// Fetches every matching item by paginating until all pages are loaded (`limit` per request matches API max).
+    static func fetchAllItemsPages(
+        category: String? = nil,
+        brand: String? = nil,
+        search: String? = nil,
+        gender: String? = nil,
+        productType: String? = nil
+    ) async throws -> [Item] {
         var all: [Item] = []
         var page = 1
-        let limit = 100
+        let limit = APIQueryLimits.maxItemsPerPage
         while true {
-            let response = try await fetchItemsPage(page: page, limit: limit)
+            let response = try await fetchItemsPage(
+                page: page,
+                limit: limit,
+                category: category,
+                brand: brand,
+                search: search,
+                gender: gender,
+                productType: productType
+            )
+            if response.items.isEmpty { break }
             all += response.items
             guard let pag = response.pagination,
                   let totalPages = pag.totalPages,
@@ -62,6 +81,11 @@ enum ItemService {
         return all
     }
 
+    /// Fetches all items by paginating through every page.
+    static func fetchAllItems() async throws -> [Item] {
+        try await fetchAllItemsPages()
+    }
+
     /// Returns a feed of items not yet swiped by the user.
     static func fetchFeedItems(
         limit: Int = 20,
@@ -69,6 +93,23 @@ enum ItemService {
         genders: [String]? = nil,
         productTypes: [String]? = nil
     ) async throws -> [Item] {
+        try await fetchFeedItemsWithMatches(
+            limit: limit,
+            category: category,
+            genders: genders,
+            productTypes: productTypes
+        ).items
+    }
+
+    /// Returns a feed of items plus per-card recommendation metadata so the
+    /// client can render match-likelihood badges. Older callers can keep
+    /// using `fetchFeedItems` and ignore matches.
+    static func fetchFeedItemsWithMatches(
+        limit: Int = 20,
+        category: String? = nil,
+        genders: [String]? = nil,
+        productTypes: [String]? = nil
+    ) async throws -> (items: [Item], matches: [FeedMatch]) {
         var queryItems: [URLQueryItem] = [URLQueryItem(name: "limit", value: "\(limit)")]
         if let category, !category.isEmpty { queryItems.append(URLQueryItem(name: "category", value: category)) }
         for g in genders ?? [] where !g.isEmpty {
@@ -82,11 +123,24 @@ enum ItemService {
             "/items/feed",
             queryItems: queryItems
         )
-        return response.items
+        return (response.items, response.matches ?? [])
     }
 
     /// Returns a single clothing item by ID.
     static func fetchItem(id: String) async throws -> Item {
         try await NetworkManager.shared.request("/items/\(id)")
+    }
+
+    /// Visually similar items (CLIP image-embedding nearest neighbours) for the
+    /// "More like this" rail. The server falls back to same-brand recents when
+    /// the item has no embedding, so this rarely returns empty. Reuses
+    /// `PaginatedItemsResponse` — the endpoint omits `pagination`, which decodes
+    /// to `nil`.
+    static func fetchSimilarItems(id: String, limit: Int = 12) async throws -> [Item] {
+        let response: PaginatedItemsResponse = try await NetworkManager.shared.request(
+            "/items/\(id)/similar",
+            queryItems: [URLQueryItem(name: "limit", value: "\(limit)")]
+        )
+        return response.items
     }
 }

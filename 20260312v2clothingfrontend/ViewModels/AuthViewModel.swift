@@ -11,6 +11,10 @@ final class AuthViewModel {
     // Verify-later email state — drives the banner and the Settings email row.
     var needsEmailVerification = false
     var verifyBannerDismissed = false
+
+    /// True until the server reports `onboardingCompleted` — RootView presents
+    /// the calibration flow while this is set.
+    var needsOnboarding = false
     enum ResendState: Equatable { case idle, sending, sent }
     var resendState: ResendState = .idle
     private(set) var currentEmail: String?
@@ -167,6 +171,7 @@ final class AuthViewModel {
             KeychainManager.clearTokens()
             resetAccountState()
             isAuthenticated = false
+            NotificationsManager.cancelAll()
             return nil
         } catch {
             return AuthErrorMapper.message(for: error)
@@ -174,11 +179,34 @@ final class AuthViewModel {
     }
 
     func logout() async {
+        // Before the session dies: stop remote pushes to this device.
+        await PushRegistrationService.unregisterCurrentToken()
         try? await AuthService.logout()
         KeychainManager.clearTokens()
         resetAccountState()
         isAuthenticated = false
+        NotificationsManager.cancelAll()
     }
+
+    /// Called by OnboardingView once the calibration answers are saved (or skipped).
+    func completeOnboarding() {
+        needsOnboarding = false
+        AnalyticsManager.shared.track("onboarding_complete")
+    }
+
+    #if DEBUG
+    /// Dev/screenshot hook: `SIMCTL_CHILD_DEMO_EMAIL` / `_DEMO_PASSWORD` on a
+    /// simulator launch logs straight in. Compiled out of release builds.
+    func demoLoginIfRequested() async {
+        let env = ProcessInfo.processInfo.environment
+        print("[demo] hook reached. DEMO_EMAIL=\(env["DEMO_EMAIL"] ?? "nil") authed=\(isAuthenticated)")
+        guard !isAuthenticated,
+              let email = env["DEMO_EMAIL"],
+              let password = env["DEMO_PASSWORD"] else { return }
+        await login(identifier: email, password: password)
+        print("[demo] login finished. authed=\(isAuthenticated) error=\(errorMessage ?? "none")")
+    }
+    #endif
 
     /// Called from RootView when NetworkManager reports real session death.
     func handleSessionExpired() {
@@ -210,6 +238,7 @@ final class AuthViewModel {
     private func apply(user: User) {
         currentEmail = user.email
         needsEmailVerification = !(user.emailVerified ?? true)
+        needsOnboarding = !user.onboardingCompleted
     }
 
     private func resetAccountState() {
@@ -217,5 +246,6 @@ final class AuthViewModel {
         needsEmailVerification = false
         verifyBannerDismissed = false
         resendState = .idle
+        needsOnboarding = false
     }
 }

@@ -111,7 +111,7 @@ private struct FeaturedBrandRow: View {
             }
 
             if collageReady {
-                Text(brand.brand)
+                Text(brand.brand.displayNormalizedTitle)
                     .font(.appDisplay(size: 20))
                     .foregroundStyle(Color.appPrimaryText)
                     .lineLimit(2)
@@ -147,28 +147,36 @@ struct ExploreView: View {
 
     var body: some View {
         @Bindable var exploreModel = exploreModel
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                searchBarContent(binding: $exploreModel.searchText, isFocused: $searchFieldFocused)
+        VStack(spacing: 0) {
+            PopArtTitleBar("Explore")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    searchBarContent(binding: $exploreModel.searchText, isFocused: $searchFieldFocused)
 
-                if trimmedQuery.isEmpty {
-                    featuredSection
-                } else {
-                    searchResultsContent
+                    if trimmedQuery.isEmpty {
+                        featuredSection
+                    } else {
+                        searchResultsContent
+                    }
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 6)
+                .padding(.bottom, 16)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .scrollDismissesKeyboard(.interactively)
         }
-        .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             PopArtHalftoneBackground()
         }
-        .navigationTitle("Explore")
-        .navigationBarTitleDisplayMode(.large)
+        .toolbar(.hidden, for: .navigationBar)
         .task {
+            async let saved: Void = exploreModel.refreshSavedBrands()
             await exploreModel.loadFeaturedIfNeeded()
+            await saved
+        }
+        .onAppear {
+            Task { await exploreModel.refreshSavedBrands() }
         }
         .onChange(of: exploreModel.searchText) { _, _ in
             exploreModel.onSearchTextChanged()
@@ -203,14 +211,19 @@ struct ExploreView: View {
     private func searchBarContent(binding: Binding<String>, isFocused: FocusState<Bool>.Binding) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(Color.appOnHalftoneSecondary)
-            TextField("Search products or brands", text: binding)
+                .foregroundStyle(Color.appSecondaryText)
+            TextField(
+                "",
+                text: binding,
+                prompt: Text("Search products or brands").foregroundStyle(Color(white: 0.42))
+            )
                 .font(.appDisplay(size: 17))
-                .foregroundStyle(Color.appOnHalftonePrimary)
+                .foregroundStyle(Color.appPrimaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .focused(isFocused)
                 .submitLabel(.search)
+                .accessibilityLabel("Search products or brands")
                 .onSubmit {
                     searchFieldFocused = false
                 }
@@ -224,16 +237,50 @@ struct ExploreView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Color.white.opacity(0.14))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.black.opacity(0.35), lineWidth: 2)
-        )
+        .popArtCardContainer()
+    }
+
+    @ViewBuilder
+    private var savedBrandsSection: some View {
+        if !exploreModel.savedBrands.isEmpty {
+            Text("Saved brands")
+                .font(.appDisplay(size: 13))
+                .tracking(0.8)
+                .foregroundStyle(Color.appOnHalftoneSecondary)
+                .textCase(.uppercase)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(exploreModel.savedBrands) { info in
+                        NavigationLink {
+                            BrandProductsView(brandName: info.brand)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(Color.appNeonPink)
+                                Text(info.brand.displayNormalizedTitle)
+                                    .font(.appDisplay(size: 14))
+                                    .foregroundStyle(Color.appPrimaryText)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.white))
+                            .overlay(Capsule().stroke(Color.black, lineWidth: 2))
+                            .background(Capsule().fill(Color.black).offset(x: 2, y: 2))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.trailing, 2)
+            }
+        }
     }
 
     @ViewBuilder
     private var featuredSection: some View {
+        savedBrandsSection
         if exploreModel.isLoadingFeatured {
             FeaturedBrandsSectionSkeletonView()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -294,7 +341,7 @@ struct ExploreView: View {
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(brand.brand)
+                                    Text(brand.brand.displayNormalizedTitle)
                                         .font(.appDisplay(size: 17))
                                         .foregroundStyle(Color.appPrimaryText)
                                     Text("\(brand.productCount) products")
@@ -323,14 +370,30 @@ struct ExploreView: View {
                     .padding(.top, exploreModel.brandResults.isEmpty ? 0 : 8)
 
                 LazyVGrid(columns: gridColumns, spacing: 14) {
-                    ForEach(exploreModel.productResults) { item in
+                    ForEach(Array(exploreModel.productResults.enumerated()), id: \.element.id) { index, item in
                         Button {
                             selectedProduct = item
                         } label: {
-                            ExploreProductCell(item: item)
+                            ExploreProductCell(
+                                item: item,
+                                onUnrecoverableHTTP404: { [id = item.id] in
+                                    if selectedProduct?.id != id {
+                                        exploreModel.removeProductResult(id: id)
+                                    }
+                                }
+                            )
                         }
                         .buttonStyle(.plain)
+                        .onAppear {
+                            Task { await exploreModel.loadMoreProductResultsIfNeeded(currentIndex: index) }
+                        }
                     }
+                }
+
+                if exploreModel.isLoadingMoreProducts {
+                    ExploreProductGridSkeletonView(cellCount: 4)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel("Loading more products")
                 }
             }
 
@@ -356,6 +419,14 @@ private struct ExploreProductCell: View {
     let item: Item
     /// Full product photos (not background-removed) for brand grid; feed-style nobg for search.
     var useOriginalProductImages: Bool = false
+    /// Card chrome: white panel with the name/price INSIDE (black on white),
+    /// thick outline + offset extrusion. Used by the brand grid so text never
+    /// floats transparently over the halftone; the Explore search grid keeps
+    /// the lighter floating style.
+    var carded: Bool = false
+    /// Optional drop hook: invoked when both primary and fallback URLs return 404. Brand page wires this
+    /// to `BrandProductsViewModel.removeItem(id:)`; Explore landing leaves it nil.
+    var onUnrecoverableHTTP404: (() -> Void)? = nil
 
     @State private var imageReady = false
 
@@ -369,8 +440,14 @@ private struct ExploreProductCell: View {
         ZStack(alignment: .topLeading) {
             ExploreProductCellSkeleton()
                 .opacity(imageReady ? 0 : 1)
-            cellBody
-                .opacity(imageReady ? 1 : 0)
+            Group {
+                if carded {
+                    cardedBody
+                } else {
+                    floatingBody
+                }
+            }
+            .opacity(imageReady ? 1 : 0)
         }
         .animation(.easeOut(duration: 0.18), value: imageReady)
         .onAppear {
@@ -383,54 +460,109 @@ private struct ExploreProductCell: View {
         }
     }
 
-    private var cellBody: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                Color.white
-                if useOriginalProductImages, let url = item.firstOriginalImageURL {
-                    CachedAsyncImage(
-                        url: url,
-                        fallbackUrl: item.secondOriginalImageURL,
-                        loadFinished: $imageReady
-                    )
-                    .scaledToFill()
-                } else if let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) {
-                    CachedAsyncImage(
-                        url: url,
-                        fallbackUrl: pair.fallback.flatMap { URL(string: $0) },
-                        loadFinished: $imageReady
-                    )
-                    .scaledToFill()
-                } else {
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.25))
-                        .overlay {
-                            Image(systemName: "photo")
-                                .foregroundStyle(Color.appSecondaryText)
-                        }
-                }
-            }
+    /// Strict square: the white base OWNS the layout (1:1 of the column
+    /// width); the image is only painted in an overlay and clipped, so an
+    /// oversized `scaledToFill` photo can never stretch the cell and break
+    /// the grid alignment.
+    private var productImage: some View {
+        Color.white
             .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
+            .overlay { imageLayer }
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.black, lineWidth: 2)
-            )
+    }
 
-            Text(item.name)
+    @ViewBuilder
+    private var imageLayer: some View {
+        if useOriginalProductImages, let url = item.firstOriginalImageURL {
+            CachedAsyncImage(
+                url: url,
+                fallbackUrl: item.secondOriginalImageURL,
+                loadFinished: $imageReady,
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+            )
+            .scaledToFill()
+        } else if let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) {
+            CachedAsyncImage(
+                url: url,
+                fallbackUrl: pair.fallback.flatMap { URL(string: $0) },
+                loadFinished: $imageReady,
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+            )
+            .scaledToFill()
+        } else {
+            Rectangle()
+                .fill(Color.gray.opacity(0.25))
+                .overlay {
+                    Image(systemName: "photo")
+                        .foregroundStyle(Color.appSecondaryText)
+                }
+        }
+    }
+
+    private var floatingBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            productImage
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.black, lineWidth: 2)
+                )
+
+            Text(item.name.displayNormalizedTitle)
                 .font(.appDisplay(size: 13))
                 .foregroundStyle(Color.appOnHalftonePrimary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
 
             if let price = item.priceDouble {
-                Text(item.currency.map { "\(formatPrice(price)) \($0)" } ?? formatPrice(price))
+                Text(priceText(price))
                     .font(.appDisplay(size: 12))
                     .foregroundStyle(Color.appOnHalftoneSecondary)
             }
         }
+    }
+
+    /// White pop-art card with name + price inside (matches the app's card
+    /// language); fixed-height text block keeps grid rows aligned.
+    private var cardedBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            productImage
+            Rectangle()
+                .fill(Color.black)
+                .frame(height: 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.name.displayNormalizedTitle)
+                    .font(.appDisplay(size: 12.5))
+                    .foregroundStyle(Color.appPrimaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                Spacer(minLength: 0)
+                if let price = item.priceDouble {
+                    Text(priceText(price))
+                        .font(.appDisplay(size: 12))
+                        .foregroundStyle(Color.appNeonPink)
+                }
+            }
+            .padding(10)
+            .frame(height: 64, alignment: .top)
+        }
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.black, lineWidth: 2.5)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black)
+                .offset(x: 4, y: 4)
+        )
+    }
+
+    private func priceText(_ price: Double) -> String {
+        item.currency.map { "\(formatPrice(price)) \($0)" } ?? formatPrice(price)
     }
 
     private func formatPrice(_ value: Double) -> String {
@@ -446,11 +578,15 @@ private struct ExploreProductCell: View {
 private enum BrandFilterOverlay: Identifiable {
     case category
     case gender
+    case price
+    case sort
 
     var id: String {
         switch self {
         case .category: return "category"
         case .gender: return "gender"
+        case .price: return "price"
+        case .sort: return "sort"
         }
     }
 
@@ -458,6 +594,8 @@ private enum BrandFilterOverlay: Identifiable {
         switch self {
         case .category: return "Type"
         case .gender: return "Gender"
+        case .price: return "Price"
+        case .sort: return "Sort"
         }
     }
 }
@@ -465,77 +603,132 @@ private enum BrandFilterOverlay: Identifiable {
 struct BrandProductsView: View {
     @State private var viewModel: BrandProductsViewModel
     @State private var selectedItem: Item?
+    @State private var shareItem: Item?
     @State private var filterOverlay: BrandFilterOverlay?
 
-    private let gridColumns = [
-        GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)
-    ]
-
-    private var popArtCardShadowPadding: CGFloat { PopArtCardStyle.shadowOffset }
-
-    private var showBrandFilters: Bool {
-        !viewModel.facetCategories.isEmpty || !viewModel.facetGenders.isEmpty
+    private var theme: BrandBannerTheme {
+        BrandBannerTheme.theme(for: viewModel.brandName)
     }
+
+    private let gridColumns = [
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14)
+    ]
 
     init(brandName: String) {
         _viewModel = State(initialValue: BrandProductsViewModel(brandName: brandName))
     }
 
     var body: some View {
-        Group {
-            if viewModel.isLoading && viewModel.items.isEmpty {
-                ScrollView {
-                    ExploreProductGridSkeletonView(cellCount: 9)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 16)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
-                .accessibilityLabel("Loading products")
-            } else if viewModel.items.isEmpty {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        if showBrandFilters {
-                            brandFilterBar
-                        }
-                        ContentUnavailableView {
-                            Label("No products", systemImage: "tshirt")
-                                .font(.appDisplay(size: 20))
-                                .foregroundStyle(Color.appOnHalftonePrimary)
-                        } description: {
-                            Text("This brand has no items to show.")
-                                .font(.appDisplay(size: 17))
-                                .foregroundStyle(Color.appOnHalftoneSecondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, showBrandFilters ? 8 : 0)
+        ScrollView {
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                BrandHeroHeader(
+                    brandName: viewModel.brandName,
+                    itemCount: viewModel.items.count,
+                    hasMore: viewModel.hasMore,
+                    theme: theme,
+                    isSaved: viewModel.isSavedBrand,
+                    onToggleSave: {
+                        Task { await viewModel.toggleSavedBrand() }
                     }
-                    .padding(.vertical, 16)
-                }
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if showBrandFilters {
-                            brandFilterBar
-                        }
+                )
+
+                Section {
+                    if viewModel.isLoading && viewModel.items.isEmpty {
+                        ExploreProductGridSkeletonView(cellCount: 8)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                            .accessibilityLabel("Loading products")
+                    } else if viewModel.items.isEmpty {
+                        emptyState
+                    } else {
                         LazyVGrid(columns: gridColumns, spacing: 14) {
-                            ForEach(viewModel.items) { item in
+                            ForEach(Array(viewModel.items.enumerated()), id: \.element.id) { index, item in
                                 Button {
                                     selectedItem = item
-                                } label: {
-                                    ExploreProductCell(item: item, useOriginalProductImages: true)
+                                }                                 label: {
+                                    ExploreProductCell(
+                                        item: item,
+                                        useOriginalProductImages: true,
+                                        carded: true,
+                                        onUnrecoverableHTTP404: { [id = item.id] in
+                                            if selectedItem?.id != id {
+                                                viewModel.removeItem(id: id)
+                                            }
+                                        }
+                                    )
                                 }
                                 .buttonStyle(.plain)
-                                .onAppear {
-                                    if item.id == viewModel.items.last?.id {
-                                        Task { await viewModel.loadMoreIfNeeded() }
+                                .contextMenu {
+                                    Button {
+                                        Task { try? await SwipeService.recordSwipe(itemId: item.id, type: .LOVE) }
+                                    } label: {
+                                        Label("Love", systemImage: "heart.fill")
                                     }
+                                    Button {
+                                        Task { try? await SwipeService.recordSwipe(itemId: item.id, type: .LIKE) }
+                                    } label: {
+                                        Label("Like", systemImage: "hand.thumbsup.fill")
+                                    }
+                                    Button {
+                                        shareItem = item
+                                    } label: {
+                                        Label("Send to a friend", systemImage: "paperplane.fill")
+                                    }
+                                }
+                                .onAppear {
+                                    viewModel.prefetchUpcoming(currentIndex: index)
+                                    Task { await viewModel.loadMoreIfNeeded(currentIndex: index) }
                                 }
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 16)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 16)
+
+                        if viewModel.isLoadingMore {
+                            ExploreProductGridSkeletonView(cellCount: 4)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                                .allowsHitTesting(false)
+                                .accessibilityLabel("Loading more products")
+                        }
                     }
+                } header: {
+                    // One pinned surface holds the filter chips AND the active
+                    // filter pills, so nothing scrolls away independently.
+                    VStack(spacing: 0) {
+                        BrandStickyBar(
+                            categorySelection: viewModel.selectedCategory,
+                            genderSelection: viewModel.selectedGender,
+                            priceSelection: viewModel.selectedPriceRange,
+                            sortOption: viewModel.sortOption,
+                            showCategoryChip: !viewModel.facetCategories.isEmpty,
+                            showGenderChip: !viewModel.facetGenders.isEmpty,
+                            onTapCategory: { filterOverlay = .category },
+                            onTapGender: { filterOverlay = .gender },
+                            onTapPrice: { filterOverlay = .price },
+                            onTapSort: { filterOverlay = .sort }
+                        )
+                        BrandActiveFilterChips(
+                            categorySelection: viewModel.selectedCategory,
+                            genderSelection: viewModel.selectedGender,
+                            priceSelection: viewModel.selectedPriceRange,
+                            sortOption: viewModel.sortOption,
+                            onClearCategory: { viewModel.setCategoryFilter(nil) },
+                            onClearGender: { viewModel.setGenderFilter(nil) },
+                            onClearPrice: { viewModel.setPriceFilter(nil) },
+                            onClearSort: { viewModel.setSortOption(.featured) }
+                        )
+                    }
+                    .background(theme.background)
+                    .overlay(
+                        Rectangle()
+                            .fill(Color.black)
+                            .frame(height: 2.5)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                    )
                 }
             }
         }
@@ -543,21 +736,41 @@ struct BrandProductsView: View {
         .background {
             PopArtHalftoneBackground()
         }
-        .navigationTitle(viewModel.brandName)
+        .navigationTitle(viewModel.brandName.displayNormalizedTitle)
         .navigationBarTitleDisplayMode(.inline)
+        // Solid bar so the back button and title never float over content.
+        .toolbarBackground(theme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .task {
-            await viewModel.loadFacetsProbe()
+            async let saved: Void = viewModel.loadSavedBrandState()
             await viewModel.loadInitial()
+            await ImageCacheService.shared.warmMemoryFromDisk(
+                urls: viewModel.items.compactMap(\.firstOriginalImageURL),
+                maxUrls: 60
+            )
+            await saved
         }
         .sheet(item: $selectedItem) { item in
             NavigationStack {
                 ItemDetailView(item: item, isPresented: true)
             }
         }
+        .sheet(item: $shareItem) { item in
+            ShareItemSheet(item: item)
+        }
         .sheet(item: $filterOverlay) { overlay in
             brandFilterSheet(overlay)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+        .overlay(alignment: .bottom) {
+            if let message = viewModel.paginationErrorMessage {
+                paginationErrorToast(message: message)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .overlay {
             if let message = viewModel.errorMessage {
@@ -569,68 +782,70 @@ struct BrandProductsView: View {
             }
         }
         .animation(.easeOut(duration: 0.22), value: viewModel.errorMessage)
+        .animation(.easeOut(duration: 0.22), value: viewModel.paginationErrorMessage)
     }
 
-    private var brandFilterBar: some View {
-        HStack(spacing: 10) {
-            if !viewModel.facetCategories.isEmpty {
-                Button {
-                    filterOverlay = .category
-                } label: {
-                    brandFilterChipLabel(
-                        title: "Type",
-                        selection: viewModel.selectedCategory ?? "All"
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            ContentUnavailableView {
+                Label("No products", systemImage: "tshirt")
+                    .font(.appDisplay(size: 20))
+                    .foregroundStyle(Color.appPrimaryText)
+            } description: {
+                Text("No items match these filters.")
+                    .font(.appDisplay(size: 16))
+                    .foregroundStyle(Color.appSecondaryText)
             }
-            if !viewModel.facetGenders.isEmpty {
-                Button {
-                    filterOverlay = .gender
-                } label: {
-                    brandFilterChipLabel(
-                        title: "Gender",
-                        selection: viewModel.selectedGender ?? "All"
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
-            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
         .popArtCardContainer()
         .padding(.horizontal, 20)
-        .padding(.top, 10)
-        .padding(.trailing, popArtCardShadowPadding)
-        .padding(.bottom, 4)
+        .padding(.trailing, PopArtCardStyle.shadowOffset)
+        .padding(.top, 20)
     }
 
-    private func brandFilterChipLabel(title: String, selection: String) -> some View {
-        HStack(spacing: 4) {
-            Text(title)
-                .font(.appDisplay(size: 13))
-                .foregroundStyle(Color.appSecondaryText)
-            Text(selection)
-                .font(.appDisplay(size: 14))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.appSecondaryText)
+    private func paginationErrorToast(message: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Color.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Couldn't load more")
+                    .font(.appDisplay(size: 14))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.white)
+                Text(message)
+                    .font(.appDisplay(size: 12))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button {
+                Task { await viewModel.retryPagination() }
+            } label: {
+                Text("Retry")
+                    .font(.appDisplay(size: 14))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.appPrimaryText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Color.black, lineWidth: 2))
+            }
+            .buttonStyle(.plain)
         }
-        .foregroundStyle(Color.appPrimaryText)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(white: 0.96))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appPrimaryText)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.black.opacity(0.1), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.black, lineWidth: 2)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder
@@ -649,7 +864,7 @@ struct BrandProductsView: View {
                         }
                         ForEach(viewModel.facetCategories, id: \.self) { cat in
                             PopArtSelectionRow(
-                                label: cat,
+                                label: cat.displayNormalizedTitle,
                                 isSelected: viewModel.selectedCategory == cat
                             ) {
                                 viewModel.setCategoryFilter(cat)
@@ -666,10 +881,37 @@ struct BrandProductsView: View {
                         }
                         ForEach(viewModel.facetGenders, id: \.self) { g in
                             PopArtSelectionRow(
-                                label: g,
+                                label: g.displayNormalizedTitle,
                                 isSelected: viewModel.selectedGender == g
                             ) {
                                 viewModel.setGenderFilter(g)
+                                filterOverlay = nil
+                            }
+                        }
+                    case .price:
+                        PopArtSelectionRow(
+                            label: "All",
+                            isSelected: viewModel.selectedPriceRange == nil
+                        ) {
+                            viewModel.setPriceFilter(nil)
+                            filterOverlay = nil
+                        }
+                        ForEach(BrandPriceRange.allCases) { range in
+                            PopArtSelectionRow(
+                                label: range.displayLabel,
+                                isSelected: viewModel.selectedPriceRange == range
+                            ) {
+                                viewModel.setPriceFilter(range)
+                                filterOverlay = nil
+                            }
+                        }
+                    case .sort:
+                        ForEach(BrandSortOption.allCases) { option in
+                            PopArtSelectionRow(
+                                label: option.displayLabel,
+                                isSelected: viewModel.sortOption == option
+                            ) {
+                                viewModel.setSortOption(option)
                                 filterOverlay = nil
                             }
                         }

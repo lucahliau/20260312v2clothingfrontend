@@ -2,58 +2,61 @@ import SwiftUI
 import UIKit
 import CoreText
 import CoreGraphics
+import UserNotifications
+
+/// Remote-notification plumbing: receives the APNS device token and shows
+/// notifications while the app is foregrounded.
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        PushRegistrationService.handleDeviceToken(deviceToken)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        // Simulator or missing push entitlement — local notifications still work.
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .badge]
+    }
+}
 
 @main
 struct _0260312v2clothingfrontendApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var authViewModel = AuthViewModel()
 
     init() {
         configureURLCache()
         registerMontserratFontIfNeeded()
-        configureNavigationBarHeaders()
-        configureTabBarAppearance()
+        // Nav/tab bar appearance for the active theme (re-applied on switch via
+        // ThemeStore). Must run after font registration so Montserrat resolves.
+        Theme.current.applyUIKitAppearance()
+        CrashReportService.shared.start()
+        // Ship any analytics events left on disk from the previous run.
+        AnalyticsManager.shared.startup()
     }
 
     private func configureURLCache() {
         let memory = 50 * 1024 * 1024
         let disk = 200 * 1024 * 1024
         URLCache.shared = URLCache(memoryCapacity: memory, diskCapacity: disk, diskPath: "url_cache")
-    }
-
-    private func configureNavigationBarHeaders() {
-        let titleLarge = UIFont.appDisplay(size: 34)
-        let titleInline = UIFont.appDisplay(size: 17)
-        let titleSmall = UIFont.appDisplay(size: 10)
-        let titleColor = UIColor(Color.appOnHalftonePrimary)
-
-        let navAppearance = UINavigationBarAppearance()
-        navAppearance.configureWithTransparentBackground()
-        navAppearance.largeTitleTextAttributes = [.font: titleLarge, .foregroundColor: titleColor]
-        navAppearance.titleTextAttributes = [.font: titleInline, .foregroundColor: titleColor]
-
-        UINavigationBar.appearance().standardAppearance = navAppearance
-        UINavigationBar.appearance().compactAppearance = navAppearance
-        UINavigationBar.appearance().scrollEdgeAppearance = navAppearance
-        UINavigationBar.appearance().compactScrollEdgeAppearance = navAppearance
-        UINavigationBar.appearance().tintColor = UIColor(Color.appAccent)
-    }
-
-    private func configureTabBarAppearance() {
-        let tabFont = UIFont.appDisplay(size: 10)
-        let tabAppearance = UITabBarAppearance()
-        tabAppearance.configureWithTransparentBackground()
-        tabAppearance.stackedLayoutAppearance.normal.titleTextAttributes = [
-            .font: tabFont,
-            .foregroundColor: UIColor(Color.appSecondaryText),
-        ]
-        tabAppearance.stackedLayoutAppearance.selected.titleTextAttributes = [
-            .font: tabFont,
-            .foregroundColor: UIColor(Color.appAccent),
-        ]
-
-        UITabBar.appearance().standardAppearance = tabAppearance
-        UITabBar.appearance().scrollEdgeAppearance = tabAppearance
-        UITabBar.appearance().tintColor = UIColor(Color.appAccent)
     }
 
     var body: some Scene {

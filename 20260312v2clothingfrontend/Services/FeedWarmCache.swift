@@ -2,7 +2,9 @@ import Foundation
 
 /// Persists the first few feed items + filter fingerprint for instant cold-start UI.
 enum FeedWarmCache {
-    private static let maxItems = 5
+    // 15 cards (~2-4KB JSON each) covers a whole session of swipes before the
+    // background network refresh has to land.
+    private static let maxItems = 15
     private static let fileName = "feed_warm_cache.json"
 
     private struct Snapshot: Codable {
@@ -12,7 +14,8 @@ enum FeedWarmCache {
     }
 
     private static var fileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
         let dir = base.appendingPathComponent("FeedWarmCache", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(fileName)
@@ -56,5 +59,10 @@ enum FeedWarmCache {
         guard matches(snapshot, productTypes: productTypes, genders: genders) else { return nil }
         guard !snapshot.items.isEmpty else { return nil }
         return snapshot.items
+    }
+
+    /// Removes the on-disk warm snapshot (e.g. from Settings).
+    static func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
     }
 }

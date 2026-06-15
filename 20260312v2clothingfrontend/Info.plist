@@ -6,14 +6,10 @@
 	<string>Clothedd</string>
 	<key>UIAppFonts</key>
 	<array>
-		<string>Fonts/Montserrat-Variable.ttf</string>
 		<string>Montserrat-Variable.ttf</string>
 	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to take a profile picture.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

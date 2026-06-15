@@ -10,6 +10,17 @@ enum ProductType: String, CaseIterable, Sendable {
 enum GenderFilter: String, CaseIterable, Sendable {
     case male, female, unisex
     var displayName: String { rawValue.capitalized }
+
+    /// Feed default from profile (`SettingsViewModel.gender`); empty set means no API gender filter (all).
+    static func defaultSelection(forProfileGender profileGender: String?) -> Set<GenderFilter> {
+        let g = profileGender?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !g.isEmpty else { return [] }
+        switch g {
+        case "Male": return [.male, .unisex]
+        case "Female": return [.female, .unisex]
+        default: return []
+        }
+    }
 }
 
 // MARK: - Item
@@ -50,9 +61,9 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
     var imageUrlPairs: [(primary: String, fallback: String?)] {
         let raw = imageUrls
         if Item.useBackgroundRemovedImages {
-            return raw.map { (primary: $0.imageUrlNoBg, fallback: $0) }
+            return raw.map { (primary: $0.imageUrlNoBg.normalizedAsHTTPURLString, fallback: $0.normalizedAsHTTPURLString) }
         }
-        return raw.map { (primary: $0, fallback: nil) }
+        return raw.map { (primary: $0.normalizedAsHTTPURLString, fallback: nil) }
     }
 
     /// Set to `true` to use background-removed (-nobg.png) variants, falling back to original if nobg missing.
@@ -61,13 +72,13 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
     /// First catalog image URL (original asset, not `-nobg`). Use for explore collages and brand grids when full product photos are preferred.
     var firstOriginalImageURL: URL? {
         guard let s = imageUrls.first else { return nil }
-        return URL(string: s)
+        return URL(string: s.normalizedAsHTTPURLString)
     }
 
     /// Second image URL for fallback loading (original asset).
     var secondOriginalImageURL: URL? {
         guard imageUrls.count > 1 else { return nil }
-        return URL(string: imageUrls[1])
+        return URL(string: imageUrls[1].normalizedAsHTTPURLString)
     }
 
     /// Price as Double for display (API sends price as string from Prisma Decimal).
@@ -134,7 +145,15 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
         brand = try container.decodeIfPresent(String.self, forKey: .brand)
         category = try container.decodeIfPresent(String.self, forKey: .category)
         subcategory = try container.decodeIfPresent(String.self, forKey: .subcategory)
-        price = try container.decodeIfPresent(String.self, forKey: .price)
+        if let s = try container.decodeIfPresent(String.self, forKey: .price) {
+            price = s
+        } else if let d = try container.decodeIfPresent(Double.self, forKey: .price) {
+            price = String(d)
+        } else if let i = try container.decodeIfPresent(Int.self, forKey: .price) {
+            price = String(i)
+        } else {
+            price = nil
+        }
         currency = try container.decodeIfPresent(String.self, forKey: .currency)
         imageUrl = try container.decodeIfPresent(String.self, forKey: .imageUrl)
         images = try container.decodeIfPresent([String].self, forKey: .images)
@@ -191,7 +210,99 @@ struct PaginatedItemsResponse: Codable, Sendable {
 
 struct ItemsFeedResponse: Codable, Sendable {
     let items: [Item]
+    let matches: [FeedMatch]?
     let remaining: Int?
+}
+
+// MARK: - Feed Match Metadata
+
+/// Why the recommender surfaced a given card. Mirrors `MatchSource` in
+/// `feed-personalization.ts` on the backend.
+enum FeedMatchSource: String, Codable, Sendable, Hashable {
+    case personalized
+    case novelty
+    case random
+    case coldStart = "cold_start"
+}
+
+/// Bucketed cluster-similarity grade used to color the badge.
+enum FeedMatchBucket: String, Codable, Sendable, Hashable {
+    case high
+    case medium
+    case low
+}
+
+/// One of the user's previously-liked items that contributed to the cluster
+/// matching the surfaced card. Surfaced in the "because you liked..." UI.
+struct MatchContributor: Codable, Sendable, Identifiable, Hashable {
+    let itemId: String
+    let name: String
+    let imageUrl: String?
+    let sim: Double
+
+    var id: String { itemId }
+
+    /// Normalized URL for `CachedAsyncImage` (handles relative paths the API may emit).
+    var imageURL: URL? {
+        guard let s = imageUrl, !s.isEmpty else { return nil }
+        return URL(string: s.normalizedAsHTTPURLString)
+    }
+}
+
+/// Per-card recommendation metadata returned by `/items/feed` alongside each
+/// `Item`. Used to render the corner match badge and the tap-to-open
+/// explainer sheet.
+struct FeedMatch: Codable, Sendable, Hashable, Identifiable {
+    let itemId: String
+    let source: FeedMatchSource
+    let clusterIndex: Int?
+    let clusterSim: Double?
+    let scorePct: Int?
+    let bucket: FeedMatchBucket?
+    let topContributors: [MatchContributor]
+
+    var id: String { itemId }
+
+    /// Decode tolerantly: unknown source/bucket strings fall back so a
+    /// future backend value can't crash the client.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        itemId = try c.decode(String.self, forKey: .itemId)
+        clusterIndex = try c.decodeIfPresent(Int.self, forKey: .clusterIndex)
+        clusterSim = try c.decodeIfPresent(Double.self, forKey: .clusterSim)
+        scorePct = try c.decodeIfPresent(Int.self, forKey: .scorePct)
+        topContributors = try c.decodeIfPresent([MatchContributor].self, forKey: .topContributors) ?? []
+        if let raw = try c.decodeIfPresent(String.self, forKey: .source),
+           let parsed = FeedMatchSource(rawValue: raw) {
+            source = parsed
+        } else {
+            source = .random
+        }
+        if let raw = try c.decodeIfPresent(String.self, forKey: .bucket),
+           let parsed = FeedMatchBucket(rawValue: raw) {
+            bucket = parsed
+        } else {
+            bucket = nil
+        }
+    }
+
+    init(
+        itemId: String,
+        source: FeedMatchSource,
+        clusterIndex: Int? = nil,
+        clusterSim: Double? = nil,
+        scorePct: Int? = nil,
+        bucket: FeedMatchBucket? = nil,
+        topContributors: [MatchContributor] = []
+    ) {
+        self.itemId = itemId
+        self.source = source
+        self.clusterIndex = clusterIndex
+        self.clusterSim = clusterSim
+        self.scorePct = scorePct
+        self.bucket = bucket
+        self.topContributors = topContributors
+    }
 }
 
 // MARK: - Brands
@@ -205,4 +316,13 @@ struct BrandInfo: Codable, Sendable, Identifiable, Hashable {
 
 struct BrandListResponse: Codable, Sendable {
     let brands: [BrandInfo]
+}
+
+struct SetFavoriteBrandRequest: Codable, Sendable {
+    let brand: String
+    let favorite: Bool
+}
+
+struct FavoriteBrandsUpdateResponse: Codable, Sendable {
+    let favoriteBrands: [String]
 }

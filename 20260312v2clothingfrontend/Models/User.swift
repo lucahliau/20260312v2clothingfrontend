@@ -51,12 +51,17 @@ struct UserUpdateRequest: Codable, Sendable {
     var stylePreferences: [String]?
     var favoriteBrands: [String]?
     var preferredSizes: [String: String]?
+    /// Used by the calibration flow's "skip" path to mark onboarding done.
+    var onboardingCompleted: Bool?
 }
 
+/// Body for `POST /users/me/onboarding` — the backend requires all three
+/// collection fields (stylePreferences must be non-empty); gender is optional.
 struct OnboardingRequest: Codable, Sendable {
-    var stylePreferences: [String]?
-    var favoriteBrands: [String]?
-    var preferredSizes: [String: String]?
+    var stylePreferences: [String]
+    var favoriteBrands: [String]
+    var preferredSizes: [String: String]
+    var gender: String?
 }
 
 struct AvatarUploadUrlResponse: Codable, Sendable {

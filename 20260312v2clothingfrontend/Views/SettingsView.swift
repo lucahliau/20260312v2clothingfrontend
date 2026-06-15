@@ -48,8 +48,11 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        settingsBodyContent
-            .navigationTitle("Settings")
+        VStack(spacing: 0) {
+            PopArtTitleBar("Settings")
+            settingsBodyContent
+        }
+            .toolbar(.hidden, for: .navigationBar)
             .task { await viewModel.loadProfileIfNeeded() }
             .onChange(of: photoPickerItem) { _, new in
                 Task { await handlePhotoLibrarySelection(new) }
@@ -280,8 +283,10 @@ struct SettingsView: View {
                 accountCard
                 personalCard
                 aboutCard
+                appearanceCard
                 feedCacheCard
                 saveCard
+                legalCard
                 logoutCard
                 deleteAccountCard
             }
@@ -594,6 +599,34 @@ struct SettingsView: View {
         }
     }
 
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Appearance")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
+            Text("Choose how Clothedd looks. Changes apply instantly.")
+                .font(.appDisplay(size: 15))
+                .foregroundStyle(Color.appSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 10) {
+                ForEach(ThemeStyle.allCases) { style in
+                    PopArtSelectionRow(
+                        label: style.displayName,
+                        isSelected: ThemeStore.shared.style == style
+                    ) {
+                        resignFirstResponder()
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            ThemeStore.shared.style = style
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .popArtCardContainer()
+    }
+
     private var aboutCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("About")
@@ -612,6 +645,42 @@ struct SettingsView: View {
             .foregroundStyle(Color.appPrimaryText)
             .frame(minHeight: 100, alignment: .topLeading)
             .multilineTextAlignment(.leading)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .popArtCardContainer()
+    }
+
+    private var legalCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Legal")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
+            Link(destination: LegalLinks.privacyPolicy) {
+                HStack {
+                    Text("Privacy Policy")
+                        .font(.appDisplay(size: 17))
+                        .foregroundStyle(Color.appPrimaryText)
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.appSecondaryText)
+                }
+                .contentShape(Rectangle())
+            }
+            Divider()
+            Link(destination: LegalLinks.termsOfService) {
+                HStack {
+                    Text("Terms of Service")
+                        .font(.appDisplay(size: 17))
+                        .foregroundStyle(Color.appPrimaryText)
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.appSecondaryText)
+                }
+                .contentShape(Rectangle())
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
