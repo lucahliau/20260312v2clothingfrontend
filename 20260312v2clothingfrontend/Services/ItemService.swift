@@ -1,5 +1,9 @@
 import Foundation
 
+private nonisolated struct FeedContinuationRequest: Codable, Sendable {
+    let excludeIds: [String]
+}
+
 enum ItemService {
     /// Fetches a single page of items with full pagination metadata.
     static func fetchItemsPage(
@@ -108,8 +112,9 @@ enum ItemService {
         limit: Int = 20,
         category: String? = nil,
         genders: [String]? = nil,
-        productTypes: [String]? = nil
-    ) async throws -> (items: [Item], matches: [FeedMatch]) {
+        productTypes: [String]? = nil,
+        excludingIds: [String] = []
+    ) async throws -> (items: [Item], matches: [FeedMatch], hasMore: Bool) {
         var queryItems: [URLQueryItem] = [URLQueryItem(name: "limit", value: "\(limit)")]
         if let category, !category.isEmpty { queryItems.append(URLQueryItem(name: "category", value: category)) }
         for g in genders ?? [] where !g.isEmpty {
@@ -121,9 +126,11 @@ enum ItemService {
 
         let response: ItemsFeedResponse = try await NetworkManager.shared.request(
             "/items/feed",
+            method: excludingIds.isEmpty ? "GET" : "POST",
+            body: excludingIds.isEmpty ? nil : FeedContinuationRequest(excludeIds: excludingIds),
             queryItems: queryItems
         )
-        return (response.items, response.matches ?? [])
+        return (response.items, response.matches ?? [], response.hasMore ?? !response.items.isEmpty)
     }
 
     /// Returns a single clothing item by ID.

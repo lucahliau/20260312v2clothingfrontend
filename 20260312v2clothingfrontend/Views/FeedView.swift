@@ -133,7 +133,21 @@ struct FeedView: View {
                             ? "Nothing matches your filters right now."
                             : "Check back later for new items."
                     )
-                } else if !viewModel.hasMoreItems {
+                } else if !viewModel.hasMoreItems && viewModel.isLoadingMore {
+                    FeedCardStackSkeletonView()
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 40)
+                        .padding(.trailing, popArtCardShadowPadding)
+                        .padding(.bottom, popArtCardShadowPadding)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel("Loading more feed items")
+                } else if !viewModel.hasMoreItems, viewModel.loadMoreErrorMessage != nil {
+                    feedEmptyState(
+                        title: "Couldn't load more",
+                        icon: "wifi.exclamationmark",
+                        message: "Your feed still has more items. Check your connection and retry."
+                    )
+                } else if !viewModel.hasMoreItems && viewModel.isFeedExhausted {
                     feedEmptyState(
                         title: "All caught up",
                         icon: "checkmark.circle",
@@ -141,6 +155,13 @@ struct FeedView: View {
                             ? "You've seen everything matching your filters."
                             : "You've seen all items. Check back later."
                     )
+                } else if !viewModel.hasMoreItems {
+                    FeedCardStackSkeletonView()
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 40)
+                        .padding(.trailing, popArtCardShadowPadding)
+                        .padding(.bottom, popArtCardShadowPadding)
+                        .allowsHitTesting(false)
                 } else {
                     cardStack
                 }

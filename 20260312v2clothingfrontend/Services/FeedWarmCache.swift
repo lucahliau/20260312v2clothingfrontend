@@ -39,7 +39,7 @@ enum FeedWarmCache {
         return snapshot.productTypes == fp.productTypes && snapshot.genders == fp.genders
     }
 
-    static func save(items: [Item], productTypes: Set<ProductType>, genders: Set<GenderFilter>) {
+    static func save(items: ArraySlice<Item>, productTypes: Set<ProductType>, genders: Set<GenderFilter>) {
         let fp = fingerprint(productTypes: productTypes, genders: genders)
         let capped = Array(items.prefix(maxItems))
         let snapshot = Snapshot(items: capped, productTypes: fp.productTypes, genders: fp.genders)

@@ -212,6 +212,7 @@ struct ItemsFeedResponse: Codable, Sendable {
     let items: [Item]
     let matches: [FeedMatch]?
     let remaining: Int?
+    let hasMore: Bool?
 }
 
 // MARK: - Feed Match Metadata

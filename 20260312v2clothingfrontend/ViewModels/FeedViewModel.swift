@@ -36,6 +36,8 @@ final class FeedViewModel {
     var currentIndex = 0
     var isLoading = false
     var errorMessage: String?
+    private(set) var isFeedExhausted = false
+    private(set) var loadMoreErrorMessage: String?
 
     /// Lookup helper for views: returns `nil` when the item has no match
     /// metadata (e.g. hydrated from warm cache before the new fields were
@@ -68,7 +70,7 @@ final class FeedViewModel {
     private let imagePrefetchWindow = 12
 
     /// Single-flight guard so concurrent swipes never fire duplicate page fetches.
-    private var isLoadingMore = false
+    private(set) var isLoadingMore = false
 
     private let initialWarmLock = NSLock()
     private var initialWarmRefreshTask: Task<Void, Never>?
@@ -140,6 +142,8 @@ final class FeedViewModel {
         items = result.items
         replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
         currentIndex = 0
+        isFeedExhausted = !result.hasMore
+        loadMoreErrorMessage = nil
         lastFeedLoadAt = Date()
         scheduleFeedImagePrefetch()
         persistFeedWarmCache()
@@ -209,9 +213,15 @@ final class FeedViewModel {
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
-            applyFetchedFeed(result.items)
-            mergeMatches(result.matches)
+            let excludedIds = exclusionIdsForNextPage()
+            let result = try await ItemService.fetchFeedItemsWithMatches(
+                limit: Self.feedBatchLimit,
+                genders: genders,
+                productTypes: productTypes,
+                excludingIds: excludedIds
+            )
+            appendFeedPage(result.items, matches: result.matches)
+            isFeedExhausted = !result.hasMore
             lastFeedLoadAt = Date()
             scheduleFeedImagePrefetch()
             persistFeedWarmCache()
@@ -220,41 +230,10 @@ final class FeedViewModel {
         }
     }
 
-    /// Merges a network feed with the current stack so the visible top card stays until swiped.
-    private func applyFetchedFeed(_ fetched: [Item]) {
-        guard !fetched.isEmpty else { return }
-        let pinnedId = currentIndex < items.count ? items[currentIndex].id : nil
-        if currentIndex >= items.count {
-            items = fetched
-            currentIndex = 0
-            return
-        }
-        let pinnedItem = items[currentIndex]
-        let idx = currentIndex
-        if let newIndex = fetched.firstIndex(where: { $0.id == pinnedItem.id }) {
-            items = fetched
-            currentIndex = newIndex
-        } else {
-            let prefix = Array(items.prefix(idx))
-            let prefixIds = Set(prefix.map(\.id))
-            var tail: [Item] = []
-            var seenTailIds = Set<String>()
-            for item in fetched where item.id != pinnedItem.id && !prefixIds.contains(item.id) && seenTailIds.insert(item.id).inserted {
-                tail.append(item)
-            }
-            items = prefix + [pinnedItem] + tail
-            currentIndex = idx
-        }
-        if let id = pinnedId, let i = items.firstIndex(where: { $0.id == id }) {
-            currentIndex = i
-        } else {
-            currentIndex = 0
-        }
-    }
-
     private func persistFeedWarmCache() {
+        let start = min(currentIndex, items.count)
         FeedWarmCache.save(
-            items: items,
+            items: items[start...],
             productTypes: selectedProductTypes,
             genders: selectedGenders
         )
@@ -283,9 +262,15 @@ final class FeedViewModel {
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
-            applyFetchedFeed(result.items)
-            mergeMatches(result.matches)
+            let excludedIds = exclusionIdsForNextPage()
+            let result = try await ItemService.fetchFeedItemsWithMatches(
+                limit: Self.feedBatchLimit,
+                genders: genders,
+                productTypes: productTypes,
+                excludingIds: excludedIds
+            )
+            appendFeedPage(result.items, matches: result.matches)
+            isFeedExhausted = !result.hasMore
             lastFeedLoadAt = Date()
             scheduleFeedImagePrefetch()
             persistFeedWarmCache()
@@ -349,6 +334,8 @@ final class FeedViewModel {
         items = []
         matchesByItemId = [:]
         currentIndex = 0
+        isFeedExhausted = false
+        loadMoreErrorMessage = nil
         lastFeedLoadAt = nil
         errorMessage = nil
 
@@ -389,33 +376,57 @@ final class FeedViewModel {
         // background queue batch + retry. The swipe never blocks the UI, never
         // rolls the card back, and never surfaces an error — so fast swiping
         // stays smooth even when the network is slow or rate-limited.
-        Task { await PendingSwipeQueue.shared.enqueue(itemId: itemId, action: action) }
-        // Keep the deck full without making this swipe wait on the page fetch.
-        Task { await loadMoreIfNeeded() }
+        persistFeedWarmCache()
+        // Preserve ordering: the swipe reaches the durable local queue before
+        // continuation begins. The request also carries session exclusions, so
+        // it remains race-free while the queue's network batch is still pending.
+        Task {
+            await PendingSwipeQueue.shared.enqueue(itemId: itemId, action: action)
+            await loadMoreIfNeeded()
+        }
         return true
     }
 
     func loadMoreIfNeeded() async {
         let remaining = items.count - currentIndex
         guard remaining < Self.loadMoreThreshold else { return }
+        guard !isFeedExhausted else { return }
         guard !isLoadingMore else { return }
         isLoadingMore = true
+        loadMoreErrorMessage = nil
         defer { isLoadingMore = false }
         do {
             let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
             let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
-            guard !result.items.isEmpty else { return }
-            let existingIds = Set(items.map(\.id))
-            let newItems = result.items.filter { !existingIds.contains($0.id) }
-            items.append(contentsOf: newItems)
-            // Only keep matches for items we actually appended.
-            let appendedIds = Set(newItems.map(\.id))
-            mergeMatches(result.matches.filter { appendedIds.contains($0.itemId) })
+            let result = try await ItemService.fetchFeedItemsWithMatches(
+                limit: Self.feedBatchLimit,
+                genders: genders,
+                productTypes: productTypes,
+                excludingIds: exclusionIdsForNextPage()
+            )
+            appendFeedPage(result.items, matches: result.matches)
+            isFeedExhausted = !result.hasMore
+            persistFeedWarmCache()
             scheduleFeedImagePrefetch()
         } catch {
-            // Silent fail for prefetch
+            loadMoreErrorMessage = error.localizedDescription
         }
+    }
+
+    /// Include every card still in the deck plus the most recent consumed
+    /// cards. Older swipes have already crossed the queue's 10-card flush
+    /// threshold and are excluded by the backend's Swipe table.
+    private func exclusionIdsForNextPage() -> [String] {
+        Array(items.suffix(250)).map(\.id)
+    }
+
+    private func appendFeedPage(_ fetched: [Item], matches: [FeedMatch]) {
+        let existingIds = Set(items.map(\.id))
+        var seen = existingIds
+        let newItems = fetched.filter { seen.insert($0.id).inserted }
+        items.append(contentsOf: newItems)
+        let appendedIds = Set(newItems.map(\.id))
+        mergeMatches(matches.filter { appendedIds.contains($0.itemId) })
     }
 
     private func scheduleFeedImagePrefetch() {
