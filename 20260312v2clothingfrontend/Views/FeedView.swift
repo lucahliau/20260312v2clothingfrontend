@@ -155,6 +155,10 @@ struct FeedView: View {
                             ? "You've seen everything matching your filters."
                             : "You've seen all items. Check back later."
                     )
+                    // Self-heal: try one fresh reload before leaving the user
+                    // stuck on a manual Refresh. If items come back the deck
+                    // repopulates and this state disappears on its own.
+                    .task { await viewModel.attemptExhaustionRecovery() }
                 } else if !viewModel.hasMoreItems {
                     FeedCardStackSkeletonView()
                         .padding(.horizontal, 20)

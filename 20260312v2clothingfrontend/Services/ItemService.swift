@@ -113,7 +113,8 @@ enum ItemService {
         category: String? = nil,
         genders: [String]? = nil,
         productTypes: [String]? = nil,
-        excludingIds: [String] = []
+        excludingIds: [String] = [],
+        personalization: Double? = nil
     ) async throws -> (items: [Item], matches: [FeedMatch], hasMore: Bool) {
         var queryItems: [URLQueryItem] = [URLQueryItem(name: "limit", value: "\(limit)")]
         if let category, !category.isEmpty { queryItems.append(URLQueryItem(name: "category", value: category)) }
@@ -122,6 +123,10 @@ enum ItemService {
         }
         for p in productTypes ?? [] where !p.isEmpty {
             queryItems.append(URLQueryItem(name: "productType", value: p))
+        }
+        if let personalization {
+            let clamped = min(1, max(0, personalization))
+            queryItems.append(URLQueryItem(name: "personalization", value: String(format: "%.2f", clamped)))
         }
 
         let response: ItemsFeedResponse = try await NetworkManager.shared.request(

@@ -87,6 +87,9 @@ final class FeedViewModel {
         showFeedSwipeHint = false
     }
 
+    /// Current "Discovery ↔ For You" slider value, sent with every feed request.
+    private var personalization: Double { FeedPreferencesStore.shared.personalization }
+
     var currentItem: Item? {
         guard currentIndex < items.count else { return nil }
         return items[currentIndex]
@@ -123,6 +126,13 @@ final class FeedViewModel {
         }
     }
 
+    /// Re-fetch the deck with the current personalization slider value. Called
+    /// when the user moves the "Discovery ↔ For You" slider in Settings so the
+    /// new mix takes effect immediately (replaces the deck, resets to the top).
+    func reloadForPersonalizationChange() async {
+        await loadItems()
+    }
+
     /// Forced reload (filters, explicit refresh).
     func loadItems() async {
         isLoading = true
@@ -138,7 +148,7 @@ final class FeedViewModel {
     private func fetchAndApplyFeedFromNetwork() async throws {
         let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
         let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-        let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes)
+        let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes, personalization: personalization)
         items = result.items
         replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
         currentIndex = 0
@@ -218,9 +228,22 @@ final class FeedViewModel {
                 limit: Self.feedBatchLimit,
                 genders: genders,
                 productTypes: productTypes,
-                excludingIds: excludedIds
+                excludingIds: excludedIds,
+                personalization: personalization
             )
-            appendFeedPage(result.items, matches: result.matches)
+            // Warm cache hydrated the SAME leftover deck we showed last launch —
+            // that's the "every open shows the same posts" complaint. As long as
+            // the user hasn't started swiping yet (currentIndex == 0), swap those
+            // stale leftovers for the fresh, non-repeating batch the server just
+            // returned (it excluded the warm ids). If they've already begun
+            // swiping, append instead so we don't yank cards out from under them.
+            if currentIndex == 0, !result.items.isEmpty {
+                items = result.items
+                replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
+                currentIndex = 0
+            } else {
+                appendFeedPage(result.items, matches: result.matches)
+            }
             isFeedExhausted = !result.hasMore
             lastFeedLoadAt = Date()
             scheduleFeedImagePrefetch()
@@ -267,7 +290,8 @@ final class FeedViewModel {
                 limit: Self.feedBatchLimit,
                 genders: genders,
                 productTypes: productTypes,
-                excludingIds: excludedIds
+                excludingIds: excludedIds,
+                personalization: personalization
             )
             appendFeedPage(result.items, matches: result.matches)
             isFeedExhausted = !result.hasMore
@@ -402,7 +426,8 @@ final class FeedViewModel {
                 limit: Self.feedBatchLimit,
                 genders: genders,
                 productTypes: productTypes,
-                excludingIds: exclusionIdsForNextPage()
+                excludingIds: exclusionIdsForNextPage(),
+                personalization: personalization
             )
             appendFeedPage(result.items, matches: result.matches)
             isFeedExhausted = !result.hasMore
@@ -410,6 +435,51 @@ final class FeedViewModel {
             scheduleFeedImagePrefetch()
         } catch {
             loadMoreErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Auto-recover from an apparent "all caught up" without making the user tap
+    /// Refresh. The feed only truly exhausts if the whole catalog minus the
+    /// user's recent swipes is empty; far more often a continuation came back
+    /// empty because this session's exclusion list saturated the candidate pool.
+    /// So on exhaustion we do ONE fresh reload from the top (no session
+    /// exclusions — the server still hides the ~1000 most-recent swipes), which
+    /// re-serves older, no-longer-recently-swiped items and keeps the feed
+    /// continuous. Rate-limited so a genuinely dry catalog doesn't hot-loop.
+    private var lastExhaustionRecoveryAt: Date?
+    private(set) var isRecoveringFeed = false
+
+    func attemptExhaustionRecovery() async {
+        guard isFeedExhausted, !hasMoreItems, !isRecoveringFeed, !isLoading else { return }
+        if let last = lastExhaustionRecoveryAt, Date().timeIntervalSince(last) < 30 { return }
+        lastExhaustionRecoveryAt = Date()
+        isRecoveringFeed = true
+        defer { isRecoveringFeed = false }
+        do {
+            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
+            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
+            let result = try await ItemService.fetchFeedItemsWithMatches(
+                limit: Self.feedBatchLimit,
+                genders: genders,
+                productTypes: productTypes,
+                personalization: personalization
+            )
+            if !result.items.isEmpty {
+                items = result.items
+                replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
+                currentIndex = 0
+                loadMoreErrorMessage = nil
+                scheduleFeedImagePrefetch()
+                persistFeedWarmCache()
+            }
+            // If still empty, the catalog really is dry for this filter — leave
+            // isFeedExhausted set so "All caught up" stays until the rate limit
+            // lets us try again (or new items arrive from the crawler).
+            isFeedExhausted = !result.hasMore
+            lastFeedLoadAt = Date()
+        } catch {
+            // Transient failure — keep the exhausted state; the next appearance
+            // (past the rate limit) retries.
         }
     }
 

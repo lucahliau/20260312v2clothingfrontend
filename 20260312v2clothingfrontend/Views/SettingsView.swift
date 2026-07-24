@@ -27,6 +27,7 @@ struct SettingsView: View {
     @Environment(AuthViewModel.self) private var authViewModel
     @Environment(SettingsViewModel.self) private var viewModel
     @Environment(FeedViewModel.self) private var feedViewModel
+    @Bindable private var feedPrefs = FeedPreferencesStore.shared
 
     @State private var activeOverlay: SettingsOverlay?
     @State private var tempDateOfBirth = Date()
@@ -284,6 +285,7 @@ struct SettingsView: View {
                 personalCard
                 aboutCard
                 appearanceCard
+                personalizationCard
                 feedCacheCard
                 saveCard
                 legalCard
@@ -681,6 +683,49 @@ struct SettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .popArtCardContainer()
+    }
+
+    private var personalizationSummary: String {
+        let pct = Int((feedPrefs.personalization * 100).rounded())
+        return "\(pct)% For You · \(100 - pct)% Discovery"
+    }
+
+    private var personalizationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Feed personalization")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
+            Text("Balance recommendations against fresh discovery. Slide toward Discovery to mix in more items outside your usual taste.")
+                .font(.appDisplay(size: 15))
+                .foregroundStyle(Color.appSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text("Discovery")
+                    .font(.appDisplay(size: 12))
+                    .foregroundStyle(Color.appSecondaryText)
+                Spacer()
+                Text("For You")
+                    .font(.appDisplay(size: 12))
+                    .foregroundStyle(Color.appSecondaryText)
+            }
+            Slider(
+                value: $feedPrefs.personalization,
+                in: 0...1,
+                step: 0.05,
+                onEditingChanged: { editing in
+                    guard !editing else { return }
+                    resignFirstResponder()
+                    Task { await feedViewModel.reloadForPersonalizationChange() }
+                }
+            )
+            .tint(Color.appAccent)
+            Text(personalizationSummary)
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appSecondaryText)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
