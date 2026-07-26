@@ -24,6 +24,17 @@ enum BrandService {
         return response.brands
     }
 
+    /// Server-composed featured rail: brand counts and four collage items in
+    /// one cached request.
+    static func fetchFeaturedBrands(limit: Int = 5) async throws -> [FeaturedBrandInfo] {
+        let capped = min(max(limit, 1), 40)
+        let response: FeaturedBrandsResponse = try await NetworkManager.shared.request(
+            "/brands/featured",
+            queryItems: [URLQueryItem(name: "limit", value: "\(capped)")]
+        )
+        return response.brands
+    }
+
     // MARK: - Saved brands
 
     /// The caller's saved brands, with live product counts.

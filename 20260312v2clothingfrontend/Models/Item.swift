@@ -319,6 +319,21 @@ struct BrandListResponse: Codable, Sendable {
     let brands: [BrandInfo]
 }
 
+/// One server-composed Explore card. Keeping the collage items beside their
+/// brand collapses the old 1 + per-brand `/items` request fan-out into one
+/// cached `/brands/featured` request.
+struct FeaturedBrandInfo: Codable, Sendable, Identifiable {
+    let brand: String
+    let productCount: Int
+    let items: [Item]
+
+    var id: String { brand }
+}
+
+struct FeaturedBrandsResponse: Codable, Sendable {
+    let brands: [FeaturedBrandInfo]
+}
+
 struct SetFavoriteBrandRequest: Codable, Sendable {
     let brand: String
     let favorite: Bool

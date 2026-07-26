@@ -18,6 +18,8 @@ final class AuthViewModel {
     enum ResendState: Equatable { case idle, sending, sent }
     var resendState: ResendState = .idle
     private(set) var currentEmail: String?
+    /// Launch `/users/me` result shared with Settings so it is not fetched twice.
+    private(set) var currentUser: User?
 
     init() {
         isAuthenticated = KeychainManager.read(key: KeychainManager.accessTokenKey) != nil
@@ -236,12 +238,14 @@ final class AuthViewModel {
     }
 
     private func apply(user: User) {
+        currentUser = user
         currentEmail = user.email
         needsEmailVerification = !(user.emailVerified ?? true)
         needsOnboarding = !user.onboardingCompleted
     }
 
     private func resetAccountState() {
+        currentUser = nil
         currentEmail = nil
         needsEmailVerification = false
         verifyBannerDismissed = false

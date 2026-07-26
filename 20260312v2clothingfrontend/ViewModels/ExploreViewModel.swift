@@ -39,12 +39,7 @@ final class ExploreViewModel {
     /// The query the loaded product pages belong to, so pagination stays consistent.
     private var activeProductQuery = ""
 
-    /// Featured brands must exceed this many products (API `productCount`).
-    private let minFeaturedBrandProductCount = 100
-    /// Max brands from explore endpoint to filter for large catalogs.
-    private let exploreBrandSampleLimit = APIQueryLimits.maxExploreBrands
-    /// Pool size to pick varied collage thumbnails from.
-    private let collageItemPoolLimit = 48
+    private static let featuredBrandLimit = 5
 
     /// Refreshes the saved-brands strip. Silent on failure (the strip simply
     /// keeps its last known contents) — called on every Explore appearance so
@@ -63,29 +58,13 @@ final class ExploreViewModel {
         errorMessage = nil
         defer { isLoadingFeatured = false }
         do {
-            let brands = try await BrandService.fetchExploreBrands(limit: exploreBrandSampleLimit)
-            let largeEnough = brands.filter { $0.productCount > minFeaturedBrandProductCount }
-            featuredBrands = Array(largeEnough.prefix(5))
-            featuredPreviewItems = [:]
-            let poolLimit = collageItemPoolLimit
-            try await withThrowingTaskGroup(of: (String, [Item]).self) { group in
-                for info in featuredBrands {
-                    group.addTask {
-                        let page = try await ItemService.fetchItemsPage(
-                            page: 1,
-                            limit: poolLimit,
-                            brand: info.brand,
-                            search: nil
-                        )
-                        let renderable = await ItemImageDisplayability.filterOriginalStyleItems(page.items)
-                        let picked = Self.variedCollageItems(from: renderable, count: 4)
-                        return (info.brand, picked)
-                    }
-                }
-                for try await pair in group {
-                    featuredPreviewItems[pair.0] = pair.1
-                }
+            let entries = try await BrandService.fetchFeaturedBrands(limit: Self.featuredBrandLimit)
+            featuredBrands = entries.map {
+                BrandInfo(brand: $0.brand, productCount: $0.productCount)
             }
+            featuredPreviewItems = Dictionary(
+                uniqueKeysWithValues: entries.map { ($0.brand, $0.items) }
+            )
             prefetchFeaturedCollageImages()
         } catch {
             errorMessage = error.localizedDescription
@@ -128,14 +107,6 @@ final class ExploreViewModel {
             }
             i = j
         }
-    }
-
-    /// Picks distinct items spread across the pool (shuffle) so collage cells are not four near-identical listings.
-    private nonisolated static func variedCollageItems(from items: [Item], count: Int) -> [Item] {
-        guard !items.isEmpty else { return [] }
-        let deduped = Array(Dictionary(grouping: items, by: \.id).values.compactMap(\.first))
-        guard deduped.count > count else { return Array(deduped.shuffled()) }
-        return Array(deduped.shuffled().prefix(count))
     }
 
     func onSearchTextChanged() {

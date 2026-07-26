@@ -113,39 +113,12 @@ struct MainTabView: View {
                 await PendingSwipeQueue.shared.flush()
                 await CrashReportService.uploadPending()
                 try? await Task.sleep(for: .milliseconds(400))
-                await settingsViewModel.loadProfileIfNeeded()
-            }
-            Task(priority: .background) {
-                // Everything else waits out the launch interaction window —
-                // the feed fetch + first card images own the first seconds,
-                // and these loads were causing tab-bar hitches on older
-                // devices when they ran during it.
-                try? await Task.sleep(for: .seconds(3))
-                // History data also feeds the Wardrobe rails, so loading it
-                // warms most wardrobe images for free.
-                await swipeHistoryViewModel.loadPreviewIfNeeded()
-                try? await Task.sleep(for: .milliseconds(80))
-                await friendsViewModel.loadPending()
-                await friendsViewModel.loadFriends()
-                // Notifications — permission prompt + daily nudges, then the
-                // friends-hot-items check (no-ops if denied/unavailable).
-                await NotificationsManager.setupAfterLogin()
-                await NotificationsManager.checkFriendsHotItems()
-                // Cheap tab data (collections) regardless of network so layouts
-                // are ready; defer the heavier image prewarm below.
-                await wardrobeViewModel.loadCollectionsIfNeeded()
-                // Explore featured last: it downloads + decodes a collage of
-                // images to validate them. ExploreView also triggers this on
-                // appear, so opening the tab early just loads it there.
-                try? await Task.sleep(for: .seconds(2))
-                await exploreViewModel.loadFeaturedIfNeeded()
-                // Opportunistic image prewarm for the other tabs — Wi-Fi /
-                // unconstrained networks only, so we never spend the user's
-                // cellular data warming tabs they may not open.
-                if ConnectivityMonitor.shared.allowsHeavyPrefetch {
-                    friendsViewModel.prewarmAvatars()
-                    await wardrobeViewModel.prewarmImages()
+                if let user = authViewModel.currentUser {
+                    settingsViewModel.applyOnboardedUser(user)
+                } else {
+                    await settingsViewModel.loadProfileIfNeeded()
                 }
+                await NotificationsManager.setupAfterLogin()
             }
         }
     }

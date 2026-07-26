@@ -175,9 +175,6 @@ struct ExploreView: View {
             await exploreModel.loadFeaturedIfNeeded()
             await saved
         }
-        .onAppear {
-            Task { await exploreModel.refreshSavedBrands() }
-        }
         .onChange(of: exploreModel.searchText) { _, _ in
             exploreModel.onSearchTextChanged()
         }

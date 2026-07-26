@@ -45,6 +45,10 @@ struct FriendsView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task {
             await viewModel.loadIfNeeded()
+            await NotificationsManager.checkFriendsHotItems()
+            if ConnectivityMonitor.shared.allowsHeavyPrefetch {
+                viewModel.prewarmAvatars()
+            }
         }
         .onChange(of: viewModel.searchText) { _, _ in
             viewModel.onSearchTextChanged()
