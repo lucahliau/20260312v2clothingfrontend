@@ -19,7 +19,9 @@ struct ServerUnreachableBanner: View {
     private var reachability: ServerReachability { .shared }
 
     var body: some View {
-        Group {
+        // A VStack (not a Group) so the modifiers below stay attached while the
+        // strip is absent — otherwise the recovery callback would never fire.
+        VStack(spacing: 0) {
             if !reachability.isReachable {
                 strip
             }
