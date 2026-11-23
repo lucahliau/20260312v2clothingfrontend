@@ -125,9 +125,8 @@ final class ExploreViewModel {
                 if urls.count >= 24 { break outer }
             }
         }
-        for u in urls {
-            ImageCacheService.shared.preload(from: u)
-        }
+        // One prefetcher (chunked); the old extra per-URL preload pass hit the
+        // same URLs a second time.
         Task.detached(priority: .utility) {
             await Self.prefetchCollageImagesAggressively(urls: urls)
         }
@@ -143,7 +142,10 @@ final class ExploreViewModel {
                 while k < j {
                     let url = urls[k]
                     group.addTask {
-                        _ = await ImageCacheService.shared.loadImage(from: url)
+                        _ = await ImageCacheService.shared.loadImage(
+                            from: url,
+                            maxPixelSize: ImageCacheService.thumbnailPixelSize
+                        )
                     }
                     k = urls.index(after: k)
                 }
@@ -259,7 +261,7 @@ final class ExploreViewModel {
     private func prefetchProductImages(_ items: [Item]) {
         for item in items.prefix(24) {
             guard let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) else { continue }
-            ImageCacheService.shared.preload(from: url)
+            ImageCacheService.shared.preload(from: url, maxPixelSize: ImageCacheService.thumbnailPixelSize)
         }
     }
 }

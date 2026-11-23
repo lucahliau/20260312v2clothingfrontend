@@ -13,6 +13,32 @@ struct GhostImagePlaceholder: View {
     }
 }
 
+/// Shown when an image failed for a reason other than a confirmed 404
+/// (timeout, server asleep, decode error): tapping it tries again.
+struct ImageRetryPlaceholder: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Tap to retry")
+                    .font(.appDisplay(size: 12))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .foregroundStyle(Color.appSecondaryText)
+            .padding(6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.gray.opacity(0.14))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Image failed to load. Retry")
+    }
+}
+
 struct CachedAsyncImage: View {
     let url: URL
     var fallbackUrl: URL? = nil
@@ -32,9 +58,22 @@ struct CachedAsyncImage: View {
     var tightCrop: Bool
     /// How the image fills its frame. Defaults to `.fill` for parity with the legacy callers; wardrobe views pass `.fit`.
     var contentMode: ContentMode
+    /// Long-edge decode size in pixels. `nil` = full size (swipe card, detail);
+    /// grids and rails pass `ImageCacheService.thumbnailPixelSize`.
+    var maxPixelSize: CGFloat?
+    /// When `true` (and no `failurePlaceholder` is given) a failed load shows a
+    /// tap-to-retry tile instead of shimmering forever.
+    var retryOnFailure: Bool
 
     @State private var image: UIImage?
     @State private var loadCompletedForCurrentURL = false
+    /// Bumped by the retry tile; part of the load task's identity.
+    @State private var retryAttempt = 0
+
+    private struct LoadID: Hashable {
+        let url: URL
+        let attempt: Int
+    }
 
     init(
         url: URL,
@@ -46,6 +85,8 @@ struct CachedAsyncImage: View {
         onUnrecoverableHTTP404: (() -> Void)? = nil,
         tightCrop: Bool = false,
         contentMode: ContentMode = .fill,
+        maxPixelSize: CGFloat? = nil,
+        retryOnFailure: Bool = false,
         placeholder: @escaping () -> AnyView = { AnyView(GhostImagePlaceholder()) }
     ) {
         self.url = url
@@ -57,8 +98,10 @@ struct CachedAsyncImage: View {
         self.onUnrecoverableHTTP404 = onUnrecoverableHTTP404
         self.tightCrop = tightCrop
         self.contentMode = contentMode
+        self.maxPixelSize = maxPixelSize
+        self.retryOnFailure = retryOnFailure
         self.placeholder = placeholder
-        let initial = ImageCacheService.shared.image(for: url)
+        let initial = ImageCacheService.shared.image(for: url, maxPixelSize: maxPixelSize)
         if tightCrop, let initial, let cached = TrimmedImageCache.shared.get(url.absoluteString) {
             _image = State(initialValue: cached)
         } else {
@@ -81,6 +124,8 @@ struct CachedAsyncImage: View {
                     .aspectRatio(contentMode: contentMode)
             } else if loadCompletedForCurrentURL, let failurePlaceholder {
                 failurePlaceholder()
+            } else if loadCompletedForCurrentURL, retryOnFailure {
+                ImageRetryPlaceholder { retryAttempt += 1 }
             } else {
                 placeholder()
             }
@@ -95,14 +140,14 @@ struct CachedAsyncImage: View {
                 cachedAsyncImageLog.debug("\(logPrefix)No memory cache; will load url=\(url.absoluteString, privacy: .public)")
             }
         }
-        .task(id: url) {
+        .task(id: LoadID(url: url, attempt: retryAttempt)) {
             await MainActor.run {
                 loadCompletedForCurrentURL = false
             }
             if tightCrop, let cached = TrimmedImageCache.shared.get(url.absoluteString) {
                 image = cached
             } else {
-                image = ImageCacheService.shared.image(for: url)
+                image = ImageCacheService.shared.image(for: url, maxPixelSize: maxPixelSize)
             }
             if resetsLoadingBinding {
                 loadFinished?.wrappedValue = (image != nil)
@@ -112,11 +157,11 @@ struct CachedAsyncImage: View {
             } else {
                 cachedAsyncImageLog.debug("\(logPrefix)Task start: fetching url=\(url.absoluteString, privacy: .public)")
             }
-            var (loaded, primaryStatus) = await ImageCacheService.shared.loadImageWithStatus(from: url)
+            var (loaded, primaryStatus) = await ImageCacheService.shared.loadImageWithStatus(from: url, maxPixelSize: maxPixelSize)
             var lastFailureStatus = primaryStatus
             if loaded == nil, let fallback = fallbackUrl {
                 cachedAsyncImageLog.debug("\(logPrefix)Primary URL produced no image; trying fallback primary=\(url.absoluteString, privacy: .public) fallback=\(fallback.absoluteString, privacy: .public)")
-                let (fbImage, fbStatus) = await ImageCacheService.shared.loadImageWithStatus(from: fallback)
+                let (fbImage, fbStatus) = await ImageCacheService.shared.loadImageWithStatus(from: fallback, maxPixelSize: maxPixelSize)
                 loaded = fbImage
                 if fbStatus != nil {
                     lastFailureStatus = fbStatus

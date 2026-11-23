@@ -74,7 +74,9 @@ private struct BrandImageCollage: View {
                     url: url,
                     fallbackUrl: item.secondOriginalImageURL,
                     loadFinished: bindingForCell(index),
-                    resetsLoadingBinding: false
+                    resetsLoadingBinding: false,
+                    maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                    retryOnFailure: true
                 )
                 .aspectRatio(contentMode: .fill)
             } else {
@@ -500,8 +502,12 @@ private struct ExploreProductCell: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ExploreProductCellSkeleton()
-                .opacity(imageReady ? 0 : 1)
+            // Removed from the hierarchy once the image is ready — a skeleton
+            // hidden with opacity keeps its 45 fps shimmer timeline running.
+            if !imageReady {
+                ExploreProductCellSkeleton()
+                    .transition(.opacity)
+            }
             Group {
                 if carded {
                     cardedBody
@@ -541,7 +547,9 @@ private struct ExploreProductCell: View {
                 url: url,
                 fallbackUrl: item.secondOriginalImageURL,
                 loadFinished: $imageReady,
-                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                retryOnFailure: true
             )
             .scaledToFill()
         } else if let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) {
@@ -549,7 +557,9 @@ private struct ExploreProductCell: View {
                 url: url,
                 fallbackUrl: pair.fallback.flatMap { URL(string: $0) },
                 loadFinished: $imageReady,
-                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                retryOnFailure: true
             )
             .scaledToFill()
         } else {
@@ -811,7 +821,8 @@ struct BrandProductsView: View {
             await viewModel.loadInitial()
             await ImageCacheService.shared.warmMemoryFromDisk(
                 urls: viewModel.items.compactMap(\.firstOriginalImageURL),
-                maxUrls: 60
+                maxUrls: 60,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize
             )
             await saved
         }
