@@ -450,32 +450,7 @@ struct SettingsView: View {
                     .font(.appDisplay(size: 17))
                     .foregroundStyle(Color.appPrimaryText)
                     .fixedSize(horizontal: false, vertical: true)
-                if authViewModel.needsEmailVerification {
-                    Button {
-                        Task { await authViewModel.resendVerificationEmail() }
-                    } label: {
-                        Text(verifyActionLabel)
-                            .font(.appDisplay(size: 12))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.orange)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(authViewModel.resendState != .idle)
-                } else if !viewModel.email.isEmpty {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Email verified")
-                }
             }
-        }
-    }
-
-    private var verifyActionLabel: String {
-        switch authViewModel.resendState {
-        case .idle: return "Not verified — resend"
-        case .sending: return "Sending…"
-        case .sent: return "Link sent"
         }
     }
 

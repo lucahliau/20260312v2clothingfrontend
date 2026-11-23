@@ -31,51 +31,25 @@ enum AuthService {
         )
     }
 
-    static func logout() async throws {
-        // Send the current refresh token so the server can delete *this*
-        // device's session row rather than relying on the per-device fallback
-        // alone. Best-effort: missing token is OK on the server side.
-        let body = LogoutRequest(
-            refreshToken: KeychainManager.read(key: KeychainManager.refreshTokenKey),
-            deviceId: KeychainManager.deviceId()
+    /// Tells the server to drop this device's session. Takes the tokens
+    /// explicitly because the caller has already wiped the keychain; goes
+    /// straight through URLSession (no token refresh, no session-expired
+    /// side effects) with a short timeout. Failures are ignored — the
+    /// local logout has already happened.
+    static func logoutBestEffort(accessToken: String?, refreshToken: String?) {
+        guard let accessToken,
+              let url = URL(string: NetworkManager.shared.baseURL + "/auth/logout") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONEncoder().encode(
+            LogoutRequest(refreshToken: refreshToken, deviceId: KeychainManager.deviceId())
         )
-        try await NetworkManager.shared.requestVoid(
-            "/auth/logout",
-            method: "POST",
-            body: body,
-            authenticated: true
-        )
-    }
-
-    static func forgotPassword(email: String) async throws {
-        let body = ForgotPasswordRequest(email: email)
-        try await NetworkManager.shared.requestVoid(
-            "/auth/forgot-password",
-            method: "POST",
-            body: body,
-            authenticated: false
-        )
-    }
-
-    static func resetPassword(token: String, password: String) async throws {
-        let body = ResetPasswordRequest(token: token, password: password)
-        try await NetworkManager.shared.requestVoid(
-            "/auth/reset-password",
-            method: "POST",
-            body: body,
-            authenticated: false
-        )
-    }
-
-    /// Always 200 on the server (no account enumeration) — safe to call freely.
-    static func resendVerification(email: String) async throws {
-        let body = ResendVerificationRequest(email: email)
-        try await NetworkManager.shared.requestVoid(
-            "/auth/resend-verification",
-            method: "POST",
-            body: body,
-            authenticated: false
-        )
+        Task.detached(priority: .utility) {
+            _ = try? await URLSession.shared.data(for: request)
+        }
     }
 
     static func signInWithApple(identityToken: String, fullName: AppleFullName? = nil) async throws -> AuthResponse {

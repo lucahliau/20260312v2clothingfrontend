@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 
 enum MainTab: String, Hashable {
     case feed, explore, wardrobe, settings
@@ -75,10 +74,6 @@ struct MainTabView: View {
         .environment(exploreViewModel)
         .environment(settingsViewModel)
         .environment(tabRouter)
-        // Verify-later nag, pinned just above the tab bar on every tab.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VerifyEmailBanner()
-        }
         // First-run calibration: stays up until the server (or skip) marks
         // onboarding complete.
         .fullScreenCover(isPresented: onboardingPresented) {
@@ -95,7 +90,6 @@ struct MainTabView: View {
             // Record the tab the app opens on (.onChange only fires on switches).
             AnalyticsManager.shared.track("screen_view", screen: tabRouter.selectedTab.rawValue)
             ConnectivityMonitor.shared.start()
-            UNUserNotificationCenter.current().setBadgeCount(0)
             Task(priority: .utility) {
                 // Replay swipes queued while offline, then ship any crash
                 // reports MetricKit delivered for the previous run. Profile is
@@ -108,7 +102,6 @@ struct MainTabView: View {
                 } else {
                     await settingsViewModel.loadProfileIfNeeded()
                 }
-                await NotificationsManager.setupAfterLogin()
             }
         }
     }
