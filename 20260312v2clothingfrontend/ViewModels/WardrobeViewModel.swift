@@ -366,25 +366,27 @@ final class WardrobeViewModel {
     }
 
     @MainActor
-    func loadPreviewIfNeeded(for collection: Collection) async {
-        guard collectionPreviews[collection.id] == nil, (collection._count?.items ?? 0) > 0 else { return }
-        guard let detail = try? await CollectionService.fetchCollection(id: collection.id) else { return }
-        collectionPreviews[collection.id] = detail.items.prefix(3).map(\.item)
-    }
-
-    /// Drawer drop handler: resolve the dragged record and add its item to the
-    /// collection. Refreshes counts + stack art on success.
-    @MainActor
-    func addRecord(withId recordId: String, from records: [SwipeRecord], to collection: Collection) async -> Bool {
-        guard let record = records.first(where: { $0.id == recordId }), let item = record.item else {
-            return false
-        }
+    func renameCollection(_ collection: Collection, to name: String) async -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
         do {
-            try await CollectionService.addItemToCollection(collectionId: collection.id, itemId: item.id)
-            collectionPreviews[collection.id] = nil
-            await loadCollectionsIfNeeded(force: true)
+            let updated = try await CollectionService.updateCollection(
+                id: collection.id,
+                update: UpdateCollectionRequest(name: trimmed)
+            )
+            if let idx = collections.firstIndex(where: { $0.id == collection.id }) {
+                // PATCH doesn't return the item count — keep the one we have.
+                collections[idx] = Collection(
+                    id: updated.id,
+                    userId: updated.userId,
+                    name: updated.name,
+                    coverUrl: updated.coverUrl,
+                    createdAt: updated.createdAt,
+                    updatedAt: updated.updatedAt,
+                    _count: updated._count ?? collections[idx]._count
+                )
+            }
             collectionsError = nil
-            ClosetHaptics.place()
             return true
         } catch {
             collectionsError = AuthErrorMapper.message(for: error)
@@ -393,21 +395,66 @@ final class WardrobeViewModel {
     }
 
     @MainActor
-    func deleteCollection(_ collection: Collection) async {
+    func loadPreviewIfNeeded(for collection: Collection) async {
+        guard collectionPreviews[collection.id] == nil, (collection._count?.items ?? 0) > 0 else { return }
+        await reloadPreview(forCollectionId: collection.id)
+    }
+
+    /// Refetches a collection's stack art. The previous art stays on screen
+    /// until the new one arrives (never blanked in between).
+    @MainActor
+    func reloadPreview(forCollectionId collectionId: String) async {
+        guard let detail = try? await CollectionService.fetchCollection(id: collectionId) else { return }
+        setPreview(from: detail)
+    }
+
+    /// Updates the stack art from an already-fetched collection detail.
+    @MainActor
+    func setPreview(from detail: CollectionDetail) {
+        collectionPreviews[detail.id] = detail.items.prefix(3).map(\.item)
+    }
+
+    /// Resolve a saved record and add its item to the collection (drawer drop
+    /// or long-press menu). Refreshes counts + stack art, and reports the
+    /// outcome through the toast so neither success nor failure is silent.
+    @MainActor
+    @discardableResult
+    func addRecord(withId recordId: String, from records: [SwipeRecord], to collection: Collection) async -> Bool {
+        guard let record = records.first(where: { $0.id == recordId }), let item = record.item else {
+            showToast("Couldn't add that item — try again.")
+            return false
+        }
+        do {
+            try await CollectionService.addItemToCollection(collectionId: collection.id, itemId: item.id)
+            collectionsError = nil
+            ClosetHaptics.place()
+            showToast("Added to \(collection.name)")
+            await loadCollectionsIfNeeded(force: true)
+            await reloadPreview(forCollectionId: collection.id)
+            return true
+        } catch NetworkError.serverError(let status, _, _) where status == 409 {
+            showToast("Already in \(collection.name)")
+            return false
+        } catch {
+            let message = AuthErrorMapper.message(for: error)
+            collectionsError = message
+            showToast("Couldn't add to \(collection.name). \(message)")
+            return false
+        }
+    }
+
+    @MainActor
+    func deleteCollection(_ collection: Collection) async -> Bool {
         do {
             try await CollectionService.deleteCollection(id: collection.id)
             collections.removeAll { $0.id == collection.id }
             collectionPreviews[collection.id] = nil
             collectionsError = nil
+            return true
         } catch {
             collectionsError = AuthErrorMapper.message(for: error)
+            return false
         }
-    }
-
-    /// Invalidate a collection's cached stack art (e.g. after removing items).
-    @MainActor
-    func invalidatePreview(for collectionId: String) {
-        collectionPreviews[collectionId] = nil
     }
 
     /// Opportunistic, Wi-Fi-gated: warm the closet-drawer stack art for the
