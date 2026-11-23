@@ -53,7 +53,7 @@ struct FittingRoomView: View {
     // MARK: - Sections
 
     private var rackSection: some View {
-        let records = viewModel.hangerRecords(from: historyViewModel.records)
+        let records = viewModel.hangerRecords(from: historyViewModel.likedRecords)
         return Group {
             if records.isEmpty {
                 emptyRackState
@@ -75,7 +75,7 @@ struct FittingRoomView: View {
 
     @ViewBuilder
     private var shoeSection: some View {
-        let shoes = viewModel.shoeRecords(from: historyViewModel.records)
+        let shoes = viewModel.shoeRecords(from: historyViewModel.likedRecords)
         if !shoes.isEmpty {
             ShoeRackView(records: shoes, dragStyle: .outfitSlot, onTap: openDetail)
         }
@@ -142,8 +142,8 @@ struct FittingRoomView: View {
     // MARK: - Drop / tap handlers
 
     private func handleDropRecord(_ slot: OutfitSlot, _ recordId: String) {
-        let allCandidates = viewModel.hangerRecords(from: historyViewModel.records)
-            + viewModel.shoeRecords(from: historyViewModel.records)
+        let allCandidates = viewModel.hangerRecords(from: historyViewModel.likedRecords)
+            + viewModel.shoeRecords(from: historyViewModel.likedRecords)
         guard let record = allCandidates.first(where: { $0.id == recordId }) else { return }
         withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
             viewModel.place(record, in: slot)

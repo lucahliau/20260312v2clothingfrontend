@@ -62,17 +62,24 @@ enum SwipeService {
         }
     }
 
-    /// Returns paginated swipe history for the user.
-    static func fetchSwipeHistory(page: Int? = nil, limit: Int? = nil) async throws -> [SwipeRecord] {
-        var queryItems: [URLQueryItem] = []
-        if let page { queryItems.append(URLQueryItem(name: "page", value: "\(page)")) }
-        if let limit { queryItems.append(URLQueryItem(name: "limit", value: "\(limit)")) }
-
-        let response: PaginatedSwipesResponse = try await NetworkManager.shared.request(
-            "/swipes/history",
-            queryItems: queryItems.isEmpty ? nil : queryItems
-        )
-        return response.swipes
+    /// One page of swipe history, newest first, with the server's pagination
+    /// block. `actions` narrows to those swipe types (the Wardrobe passes
+    /// LOVE + LIKE); `nil` returns every action.
+    static func fetchSwipeHistoryPage(
+        page: Int,
+        limit: Int,
+        actions: [SwipeType]? = nil
+    ) async throws -> PaginatedSwipesResponse {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "page", value: "\(page)"),
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+        if let actions, !actions.isEmpty {
+            queryItems.append(
+                URLQueryItem(name: "action", value: actions.map(\.rawValue).joined(separator: ","))
+            )
+        }
+        return try await NetworkManager.shared.request("/swipes/history", queryItems: queryItems)
     }
 
     /// Undoes the most recent swipe.

@@ -56,7 +56,7 @@ struct ClosetView: View {
                 let trimmedQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if searchActive && !trimmedQuery.isEmpty {
                     searchResultsSection(query: trimmedQuery)
-                } else if historyViewModel.isLoading && historyViewModel.records.isEmpty {
+                } else if historyViewModel.isLoadingLiked && historyViewModel.likedRecords.isEmpty {
                     ClosetSkeletonView()
                 } else if closetIsEmpty {
                     emptyClosetState
@@ -64,7 +64,7 @@ struct ClosetView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         railHeader("Tops & Jackets")
                         railSection(
-                            records: viewModel.topRailRecords(from: historyViewModel.records),
+                            records: viewModel.topRailRecords(from: historyViewModel.likedRecords),
                             labelPlacement: .nearHanger,
                             emptyTitle: "No tops yet",
                             emptyMessage: "Love something in the Feed and it'll be hanging here."
@@ -72,7 +72,7 @@ struct ClosetView: View {
                         railHeader("Bottoms")
                             .padding(.top, 6)
                         railSection(
-                            records: viewModel.bottomRailRecords(from: historyViewModel.records),
+                            records: viewModel.bottomRailRecords(from: historyViewModel.likedRecords),
                             // Tag near the hanger (not reserved below) so the
                             // trousers get the full card height — bottoms
                             // render noticeably larger on the rail.
@@ -111,7 +111,7 @@ struct ClosetView: View {
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: drawerOpen)
         .toolbar(.hidden, for: .navigationBar)
-        .task { await historyViewModel.loadIfNeeded() }
+        .task { await historyViewModel.loadLikedIfNeeded() }
         .task { await viewModel.loadCollectionsIfNeeded() }
         .sheet(item: $selectedContext) { ctx in
             NavigationStack {
@@ -145,8 +145,8 @@ struct ClosetView: View {
     /// Nothing favorited at all (and not mid-load) — show the big CTA instead
     /// of four stacked per-section empty states.
     private var closetIsEmpty: Bool {
-        !historyViewModel.isLoading
-            && viewModel.allClosetRecords(from: historyViewModel.records).isEmpty
+        !historyViewModel.isLoadingLiked
+            && viewModel.allClosetRecords(from: historyViewModel.likedRecords).isEmpty
     }
 
     // MARK: - Search
@@ -183,7 +183,7 @@ struct ClosetView: View {
 
     @ViewBuilder
     private func searchResultsSection(query: String) -> some View {
-        let results = viewModel.searchClosetRecords(from: historyViewModel.records, query: query)
+        let results = viewModel.searchClosetRecords(from: historyViewModel.likedRecords, query: query)
         if results.isEmpty {
             VStack(spacing: 14) {
                 PopArtTag(rotation: -3) {
@@ -362,7 +362,7 @@ struct ClosetView: View {
 
     @ViewBuilder
     private var shelfSection: some View {
-        let shelf = viewModel.shelfRecords(from: historyViewModel.records)
+        let shelf = viewModel.shelfRecords(from: historyViewModel.likedRecords)
         if !shelf.isEmpty {
             railHeader("Bags & Accessories")
                 .padding(.top, 6)
@@ -372,7 +372,7 @@ struct ClosetView: View {
 
     @ViewBuilder
     private var shoeSection: some View {
-        let shoes = viewModel.shoeRecords(from: historyViewModel.records)
+        let shoes = viewModel.shoeRecords(from: historyViewModel.likedRecords)
         if !shoes.isEmpty {
             railHeader("Shoes")
                 .padding(.top, 6)

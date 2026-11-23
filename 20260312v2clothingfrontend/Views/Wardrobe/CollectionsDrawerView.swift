@@ -181,7 +181,7 @@ struct CollectionsDrawerPanel: View {
             Task {
                 _ = await viewModel.addRecord(
                     withId: payload.recordId,
-                    from: historyViewModel.records,
+                    from: historyViewModel.likedRecords,
                     to: collection
                 )
             }

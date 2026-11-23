@@ -21,7 +21,7 @@ struct AddToCollectionMenuModifier: ViewModifier {
                             Task {
                                 _ = await wardrobeViewModel.addRecord(
                                     withId: recordId,
-                                    from: historyViewModel.records,
+                                    from: historyViewModel.likedRecords,
                                     to: collection
                                 )
                             }

@@ -17,7 +17,7 @@ struct SwipeHistoryView: View {
 
     var body: some View {
         Group {
-            if viewModel.isLoading {
+            if viewModel.isLoading && viewModel.records.isEmpty {
                 SwipeHistorySkeletonView()
             } else if viewModel.records.isEmpty {
                 ContentUnavailableView {
@@ -85,10 +85,41 @@ struct SwipeHistoryView: View {
                         }
                     }
                 }
+                historyFooter
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 16)
         }
+        .refreshable { await viewModel.reloadHistory() }
+    }
+
+    /// Paging sentinel: scrolling it into view pulls the next page. Rows are
+    /// grouped by action, so a new page can add rows to any section above.
+    @ViewBuilder
+    private var historyFooter: some View {
+        if viewModel.hasMoreHistory {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .tint(Color.appOnHalftonePrimary)
+                Text(historyProgressLabel)
+                    .font(.appDisplay(size: 13))
+                    .foregroundStyle(Color.appOnHalftoneSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            // Re-arms after every page, so a sentinel that is still on
+            // screen keeps loading until the list outgrows the viewport.
+            .task(id: viewModel.records.count) {
+                await viewModel.loadMoreHistory()
+            }
+        }
+    }
+
+    private var historyProgressLabel: String {
+        if let total = viewModel.historyTotal {
+            return "Showing \(viewModel.records.count) of \(total)"
+        }
+        return "Loading more…"
     }
 
     private func sectionHeader(for action: SwipeType) -> String {
@@ -184,7 +215,20 @@ private struct SwipeHistoryRowView: View {
         if let item = record.item,
            let pair = item.imageUrlPairs.first,
            let url = URL(string: pair.primary) {
-            CachedAsyncImage(url: url, fallbackUrl: pair.fallback.flatMap { URL(string: $0) }, loadFinished: $thumbReady)
+            CachedAsyncImage(
+                url: url,
+                fallbackUrl: pair.fallback.flatMap { URL(string: $0) },
+                loadFinished: $thumbReady,
+                failurePlaceholder: {
+                    AnyView(
+                        Image(systemName: "photo")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Color.appSecondaryText)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.gray.opacity(0.2))
+                    )
+                }
+            )
                 .aspectRatio(contentMode: .fill)
                 .frame(width: thumbSize, height: thumbSize)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
