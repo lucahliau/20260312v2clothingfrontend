@@ -9,7 +9,7 @@ This is the **SwiftUI/MVVM iOS frontend** of the clothing app ("Clothedd"). It t
 
 Quick facts:
 - Build (sim): `xcodebuild -scheme 20260312v2clothingfrontend -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO -quiet`
-- Backend URL is hardcoded at `Services/NetworkManager.swift:56`.
+- Backend URL is hardcoded at `Services/NetworkManager.swift:62` (since 2026-11-22: self-hosted on the Air over Tailscale, `https://ls-macbook-air.taild99b83.ts.net:8445`).
 - No Railway deploy for this app (built via Xcode).
 
 **After fixing any failure, silently update the skill playbook** (`~/.claude/skills/clothing-sprint/playbook.md`) so the next session skips the dead end.

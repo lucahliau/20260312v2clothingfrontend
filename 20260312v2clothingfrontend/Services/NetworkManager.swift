@@ -59,7 +59,7 @@ actor TokenRefresher {
 final class NetworkManager {
     static let shared = NetworkManager()
 
-    let baseURL = "https://20260311-clothes-backend-production.up.railway.app"
+    let baseURL = "https://ls-macbook-air.taild99b83.ts.net:8445"
     private let session = URLSession.shared
     private let tokenRefresher = TokenRefresher()
 
