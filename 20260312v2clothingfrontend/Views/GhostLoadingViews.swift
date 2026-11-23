@@ -444,91 +444,34 @@ struct ExploreSearchLoadingSkeletonView: View {
     }
 }
 
-// MARK: - Friends skeletons
-
-struct FriendsSearchRowSkeleton: View {
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Circle()
-                .fill(GhostPalette.base)
-                .frame(width: 48, height: 48)
-                .overlay { HistoryThumbShimmer() }
-                .clipShape(Circle())
-
-            VStack(alignment: .leading, spacing: 5) {
-                GhostBlock(height: 17, cornerRadius: 5, widthFraction: 0.92)
-                GhostBlock(height: 15, cornerRadius: 5, widthFraction: 0.45)
-            }
-            Spacer(minLength: 8)
-            GhostBlock(height: 14, cornerRadius: 4, widthFraction: 1)
-                .frame(width: 10)
-        }
-        .padding(15)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct FriendsListSkeletonView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(0..<6, id: \.self) { _ in
-                FriendsSearchRowSkeleton()
-                    .popArtCardContainer()
-            }
-        }
-    }
-}
-
 // MARK: - Wardrobe closet skeleton
 
-/// Mirrors `ClosetView`: two horizontal hanger rails + a shelf row + a shoe
-/// rack. Shown on first load (before the swipe history arrives) so the closet
-/// shimmers instead of flashing the per-rail empty states. Lighter ghosts than
-/// the white-card skeletons since the closet sits on the dark halftone wall.
+/// Ghost of the saved-items grid: image tiles with two caption lines. Shown
+/// on first load (before the liked items arrive) so the Wardrobe shimmers
+/// instead of flashing its empty state. Lighter ghosts than the white-card
+/// skeletons since the closet sits on the dark halftone wall.
 struct ClosetSkeletonView: View {
     private let base = Color.white.opacity(0.16)
     private let highlight = Color.white.opacity(0.5)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            railHeader
-            hangerRail(count: 4, height: 150)
-            railHeader.padding(.top, 6)
-            hangerRail(count: 4, height: 168)
-            railHeader.padding(.top, 6)
-            tileRow(count: 4, side: 86)
-            railHeader.padding(.top, 6)
-            tileRow(count: 4, side: 96)
-        }
-        .padding(.top, 2)
-        .padding(.bottom, 14)
-    }
-
-    private var railHeader: some View {
-        block(width: 150, height: 20, cornerRadius: 6)
-            .padding(.leading, 16)
-            .padding(.top, 4)
-    }
-
-    private func hangerRail(count: Int, height: CGFloat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(0..<count, id: \.self) { _ in
-                    block(width: 120, height: height, cornerRadius: 14)
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 105), spacing: 14)],
+            spacing: 18
+        ) {
+            ForEach(0..<9, id: \.self) { _ in
+                VStack(spacing: 6) {
+                    block(width: 96, height: 110, cornerRadius: 12)
+                    block(width: 84, height: 10, cornerRadius: 4)
+                    block(width: 54, height: 9, cornerRadius: 4)
                 }
             }
-            .padding(.horizontal, 16)
         }
-        .scrollDisabled(true)
-    }
-
-    private func tileRow(count: Int, side: CGFloat) -> some View {
-        HStack(spacing: 12) {
-            ForEach(0..<count, id: \.self) { _ in
-                block(width: side, height: side, cornerRadius: 12)
-            }
-        }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Loading saved items")
     }
 
     /// Pop-art ghost tile: shimmer fill + the black outline used across the closet.
@@ -542,53 +485,3 @@ struct ClosetSkeletonView: View {
             )
     }
 }
-
-// MARK: - Conversation list row skeleton
-
-/// Avatar circle + two text lines, matching a conversations-list row. Lives
-/// here (was inline in ConversationsListView) so every skeleton shares one
-/// shimmer treatment.
-struct ConversationRowSkeleton: View {
-    var body: some View {
-        HStack(spacing: 14) {
-            ShimmerFill()
-                .frame(width: 52, height: 52)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 8) {
-                GhostBlock(height: 14, cornerRadius: 4, widthFraction: 0.55)
-                GhostBlock(height: 12, cornerRadius: 4, widthFraction: 1)
-            }
-        }
-        .padding(15)
-    }
-}
-
-// MARK: - Conversation thread skeleton
-
-/// Placeholder bubbles for a DM thread's initial load — alternating incoming
-/// (leading) and outgoing (trailing) shimmer bubbles of varied widths.
-struct ConversationThreadSkeletonView: View {
-    /// (isOutgoing, width, height) — a believable back-and-forth.
-    private let bubbles: [(Bool, CGFloat, CGFloat)] = [
-        (false, 150, 38), (true, 110, 38), (false, 210, 56),
-        (true, 170, 38), (false, 90, 38), (true, 200, 56),
-    ]
-
-    var body: some View {
-        VStack(spacing: 12) {
-            ForEach(Array(bubbles.enumerated()), id: \.offset) { _, b in
-                HStack {
-                    if b.0 { Spacer(minLength: 60) }
-                    ShimmerFill()
-                        .frame(width: b.1, height: b.2)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-                    if !b.0 { Spacer(minLength: 60) }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-}
-

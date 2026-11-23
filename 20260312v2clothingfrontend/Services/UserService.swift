@@ -44,20 +44,4 @@ enum UserService {
             body: AvatarUrlUpdateRequest(avatarUrl: publicUrl)
         )
     }
-
-    static func registerDeviceToken(_ token: String) async throws {
-        let body = DeviceTokenRequest(token: token)
-        try await NetworkManager.shared.requestVoid(
-            "/users/me/device-tokens",
-            method: "POST",
-            body: body
-        )
-    }
-
-    static func removeDeviceToken(_ token: String) async throws {
-        try await NetworkManager.shared.requestVoid(
-            "/users/me/device-tokens/\(token)",
-            method: "DELETE"
-        )
-    }
 }

@@ -50,19 +50,6 @@ struct APIErrorBody: Codable, Sendable {
 
 // MARK: - Additional Auth Requests
 
-struct ForgotPasswordRequest: Codable, Sendable {
-    let email: String
-}
-
-struct ResetPasswordRequest: Codable, Sendable {
-    let token: String
-    let password: String
-}
-
-struct ResendVerificationRequest: Codable, Sendable {
-    let email: String
-}
-
 /// Matches the backend's `appleAuthSchema`: { identityToken, fullName?, deviceId? }.
 struct AppleSignInRequest: Codable, Sendable {
     let identityToken: String

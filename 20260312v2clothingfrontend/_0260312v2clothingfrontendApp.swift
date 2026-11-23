@@ -2,38 +2,15 @@ import SwiftUI
 import UIKit
 import CoreText
 import CoreGraphics
-import UserNotifications
 
-/// Remote-notification plumbing: receives the APNS device token and shows
-/// notifications while the app is foregrounded.
-final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+/// Launch hook: cancels notifications scheduled by older builds.
+final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        UNUserNotificationCenter.current().delegate = self
+        NotificationsManager.cancelLegacyNotifications()
         return true
-    }
-
-    func application(
-        _ application: UIApplication,
-        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
-    ) {
-        PushRegistrationService.handleDeviceToken(deviceToken)
-    }
-
-    func application(
-        _ application: UIApplication,
-        didFailToRegisterForRemoteNotificationsWithError error: Error
-    ) {
-        // Simulator or missing push entitlement — local notifications still work.
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound, .badge]
     }
 }
 

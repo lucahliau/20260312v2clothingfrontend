@@ -8,16 +8,9 @@ final class AuthViewModel {
     var isLoading = false
     var errorMessage: String?
 
-    // Verify-later email state — drives the banner and the Settings email row.
-    var needsEmailVerification = false
-    var verifyBannerDismissed = false
-
     /// True until the server reports `onboardingCompleted` — RootView presents
     /// the calibration flow while this is set.
     var needsOnboarding = false
-    enum ResendState: Equatable { case idle, sending, sent }
-    var resendState: ResendState = .idle
-    private(set) var currentEmail: String?
     /// Launch `/users/me` result shared with Settings so it is not fetched twice.
     private(set) var currentUser: User?
 
@@ -26,7 +19,7 @@ final class AuthViewModel {
     }
 
     /// Launch-time validation: confirms the stored token still works and pulls
-    /// fresh account state (e.g. emailVerified). Only a real 401 logs out —
+    /// fresh account state. Only a real 401 logs out —
     /// an offline launch keeps the session.
     func checkSession() async {
         guard KeychainManager.read(key: KeychainManager.accessTokenKey) != nil else {
@@ -42,15 +35,6 @@ final class AuthViewModel {
             isAuthenticated = false
         } catch {
             // Transient (offline, 5xx): never log the user out for connectivity.
-        }
-    }
-
-    /// Re-pulls emailVerified — called when the app foregrounds while the
-    /// banner is showing (the user likely just tapped the email link).
-    func refreshVerificationStatus() async {
-        guard isAuthenticated, needsEmailVerification else { return }
-        if let user: User = try? await NetworkManager.shared.request("/users/me") {
-            apply(user: user)
         }
     }
 
@@ -135,19 +119,6 @@ final class AuthViewModel {
         }
     }
 
-    /// Banner action. The endpoint never reveals whether the email exists, so
-    /// "sent" simply means the request went through.
-    func resendVerificationEmail() async {
-        guard let email = currentEmail else { return }
-        resendState = .sending
-        do {
-            try await AuthService.resendVerification(email: email)
-            resendState = .sent
-        } catch {
-            resendState = .idle
-        }
-    }
-
     /// Returns nil on success, or a user-facing error message. On success the
     /// server has revoked every session and re-issued tokens for this device.
     func changePassword(currentPassword: String, newPassword: String) async -> String? {
@@ -173,21 +144,22 @@ final class AuthViewModel {
             KeychainManager.clearTokens()
             resetAccountState()
             isAuthenticated = false
-            NotificationsManager.cancelAll()
             return nil
         } catch {
             return AuthErrorMapper.message(for: error)
         }
     }
 
+    /// Local-first: the tokens are wiped and the auth gate flips immediately,
+    /// so logging out never waits on (or fails with) the network. Telling
+    /// the server is best-effort in the background.
     func logout() async {
-        // Before the session dies: stop remote pushes to this device.
-        await PushRegistrationService.unregisterCurrentToken()
-        try? await AuthService.logout()
+        let accessToken = KeychainManager.read(key: KeychainManager.accessTokenKey)
+        let refreshToken = KeychainManager.read(key: KeychainManager.refreshTokenKey)
         KeychainManager.clearTokens()
         resetAccountState()
         isAuthenticated = false
-        NotificationsManager.cancelAll()
+        AuthService.logoutBestEffort(accessToken: accessToken, refreshToken: refreshToken)
     }
 
     /// Called by OnboardingView once the calibration answers are saved (or skipped).
@@ -231,25 +203,17 @@ final class AuthViewModel {
         if let user = response.user {
             apply(user: user)
         }
-        verifyBannerDismissed = false
-        resendState = .idle
         errorMessage = nil
         isAuthenticated = true
     }
 
     private func apply(user: User) {
         currentUser = user
-        currentEmail = user.email
-        needsEmailVerification = !(user.emailVerified ?? true)
         needsOnboarding = !user.onboardingCompleted
     }
 
     private func resetAccountState() {
         currentUser = nil
-        currentEmail = nil
-        needsEmailVerification = false
-        verifyBannerDismissed = false
-        resendState = .idle
         needsOnboarding = false
     }
 }

@@ -10,7 +10,6 @@ struct ItemDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAction: SwipeType?
     @State private var isUpdatingSwipe = false
-    @State private var shareSheetPresented = false
     @State private var swipeSaveError: String?
     @State private var similarItems: [Item] = []
 
@@ -21,7 +20,6 @@ struct ItemDetailView: View {
                 if hasValidSourceURL {
                     websiteCTA
                 }
-                shareCTA
                 if !item.imageUrls.isEmpty {
                     photosSection
                 } else {
@@ -70,9 +68,6 @@ struct ItemDetailView: View {
             }
         }
         .navigationTitle("")
-        .sheet(isPresented: $shareSheetPresented) {
-            ShareItemSheet(item: item)
-        }
         .overlay {
             if let message = swipeSaveError {
                 PopArtMessageAlert(title: "Error", message: message) {
@@ -121,12 +116,6 @@ struct ItemDetailView: View {
     }
 
     private static let interactionChoices: [SwipeType] = [.LOVE, .LIKE, .NEUTRAL, .DISLIKE]
-
-    private var shareCTA: some View {
-        PopArtPrimaryActionButton(title: "Send to a friend", systemImage: "paperplane.fill") {
-            shareSheetPresented = true
-        }
-    }
 
     /// Love/Like/Neutral/Dislike. With an existing swipe record (wardrobe,
     /// history) the host's update callback runs; without one (brand page,

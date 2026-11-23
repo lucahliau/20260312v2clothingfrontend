@@ -1,8 +1,7 @@
 import SwiftUI
-import UserNotifications
 
 enum MainTab: String, Hashable {
-    case feed, explore, wardrobe, friends, settings
+    case feed, explore, wardrobe, settings
 }
 
 /// Cross-tab navigation: any view can switch the selected tab (e.g. the empty
@@ -30,7 +29,6 @@ struct MainTabView: View {
     @State private var swipeHistoryViewModel = SwipeHistoryViewModel()
     @State private var wardrobeViewModel = WardrobeViewModel()
     @State private var exploreViewModel = ExploreViewModel()
-    @State private var friendsViewModel = FriendsViewModel()
     @State private var settingsViewModel = SettingsViewModel()
     @State private var didStartSessionWarmup = false
     @State private var tabRouter = TabRouter()
@@ -58,17 +56,9 @@ struct MainTabView: View {
                 WardrobeHomeView()
             }
             .tabItem {
-                Label("Wardrobe", systemImage: "hanger")
+                Label("Saved", systemImage: "hanger")
             }
             .tag(MainTab.wardrobe)
-
-            NavigationStack {
-                FriendsView()
-            }
-            .tabItem {
-                Label("Friends", systemImage: "person.2")
-            }
-            .tag(MainTab.friends)
 
             NavigationStack {
                 SettingsView()
@@ -82,13 +72,8 @@ struct MainTabView: View {
         .environment(swipeHistoryViewModel)
         .environment(wardrobeViewModel)
         .environment(exploreViewModel)
-        .environment(friendsViewModel)
         .environment(settingsViewModel)
         .environment(tabRouter)
-        // Verify-later nag, pinned just above the tab bar on every tab.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VerifyEmailBanner()
-        }
         // First-run calibration: stays up until the server (or skip) marks
         // onboarding complete.
         .fullScreenCover(isPresented: onboardingPresented) {
@@ -105,7 +90,6 @@ struct MainTabView: View {
             // Record the tab the app opens on (.onChange only fires on switches).
             AnalyticsManager.shared.track("screen_view", screen: tabRouter.selectedTab.rawValue)
             ConnectivityMonitor.shared.start()
-            UNUserNotificationCenter.current().setBadgeCount(0)
             Task(priority: .utility) {
                 // Replay swipes queued while offline, then ship any crash
                 // reports MetricKit delivered for the previous run. Profile is
@@ -118,7 +102,6 @@ struct MainTabView: View {
                 } else {
                     await settingsViewModel.loadProfileIfNeeded()
                 }
-                await NotificationsManager.setupAfterLogin()
             }
         }
     }

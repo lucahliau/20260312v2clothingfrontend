@@ -16,45 +16,9 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>app.wardrobe.outfit-hat</string>
+			<string>app.wardrobe.item</string>
 			<key>UTTypeDescription</key>
-			<string>Wardrobe Hat Drag Payload</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>app.wardrobe.outfit-top</string>
-			<key>UTTypeDescription</key>
-			<string>Wardrobe Top Drag Payload</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>app.wardrobe.outfit-bottoms</string>
-			<key>UTTypeDescription</key>
-			<string>Wardrobe Bottoms Drag Payload</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>app.wardrobe.outfit-shoes</string>
-			<key>UTTypeDescription</key>
-			<string>Wardrobe Shoes Drag Payload</string>
+			<string>Wardrobe Item Drag Payload</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
