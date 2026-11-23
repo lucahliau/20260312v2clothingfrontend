@@ -6,14 +6,16 @@ struct BrandActiveFilterChips: View {
     let categorySelection: String?
     let genderSelection: String?
     let priceSelection: BrandPriceRange?
+    var onSaleOnly: Bool = false
     let sortOption: BrandSortOption
     let onClearCategory: () -> Void
     let onClearGender: () -> Void
     let onClearPrice: () -> Void
+    var onClearOnSale: () -> Void = {}
     let onClearSort: () -> Void
 
     private var hasAny: Bool {
-        categorySelection != nil || genderSelection != nil || priceSelection != nil || sortOption != .featured
+        categorySelection != nil || genderSelection != nil || priceSelection != nil || onSaleOnly || sortOption != .featured
     }
 
     var body: some View {
@@ -36,6 +38,12 @@ struct BrandActiveFilterChips: View {
                         ActiveFilterPill(
                             label: "Price: \(price.displayLabel)",
                             action: onClearPrice
+                        )
+                    }
+                    if onSaleOnly {
+                        ActiveFilterPill(
+                            label: "On sale",
+                            action: onClearOnSale
                         )
                     }
                     if sortOption != .featured {

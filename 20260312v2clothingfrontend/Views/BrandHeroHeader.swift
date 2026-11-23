@@ -86,7 +86,10 @@ struct BrandBannerTheme {
 /// filter bar below takes over.
 struct BrandHeroHeader: View {
     let brandName: String
+    /// Real catalog total for the current filters (`pagination.total`) when
+    /// known; otherwise the number of items loaded so far.
     let itemCount: Int
+    /// `true` only when the total is unknown and more pages remain ("60+").
     let hasMore: Bool
     var theme: BrandBannerTheme? = nil
     var isSaved: Bool = false

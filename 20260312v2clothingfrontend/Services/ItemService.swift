@@ -15,7 +15,9 @@ enum ItemService {
         gender: String? = nil,
         productType: String? = nil,
         minPrice: Double? = nil,
-        maxPrice: Double? = nil
+        maxPrice: Double? = nil,
+        onSale: Bool = false,
+        sort: String? = nil
     ) async throws -> PaginatedItemsResponse {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "page", value: "\(page)"),
@@ -28,6 +30,9 @@ enum ItemService {
         if let productType, !productType.isEmpty { queryItems.append(URLQueryItem(name: "productType", value: productType)) }
         if let minPrice { queryItems.append(URLQueryItem(name: "minPrice", value: "\(Int(minPrice))")) }
         if let maxPrice { queryItems.append(URLQueryItem(name: "maxPrice", value: "\(Int(maxPrice))")) }
+        if onSale { queryItems.append(URLQueryItem(name: "onSale", value: "true")) }
+        // Server-side ordering: newest | price_asc | price_desc (omitted = server default).
+        if let sort, !sort.isEmpty { queryItems.append(URLQueryItem(name: "sort", value: sort)) }
 
         return try await NetworkManager.shared.request(
             "/items",

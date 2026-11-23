@@ -38,54 +38,34 @@ enum BrandPriceRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Sort options for the brand-products grid. Applied client-side over the items loaded so far.
+/// Sort options for product grids (brand page, search results). Applied
+/// SERVER-side via `sort=` on `GET /items`, so the order is correct across the
+/// whole result set rather than just the pages loaded so far.
+///
+/// `.featured` is the server's default order (newest first on a brand page,
+/// relevance for a text search); the old separate "Newest" option was identical
+/// to it on brand pages and has been removed.
 enum BrandSortOption: String, CaseIterable, Identifiable, Sendable {
     case featured
     case priceAsc
     case priceDesc
-    case newest
 
     var id: String { rawValue }
 
     var displayLabel: String {
         switch self {
-        case .featured: return "Featured"
+        case .featured: return "Newest"
         case .priceAsc: return "Price: Low to High"
         case .priceDesc: return "Price: High to Low"
-        case .newest: return "Newest"
         }
     }
 
-    /// `.featured` preserves the server's order (which is what the user gets with no sort applied).
-    func apply(to items: [Item]) -> [Item] {
+    /// Value for the `sort` query parameter; `nil` keeps the server default.
+    var serverValue: String? {
         switch self {
-        case .featured:
-            return items
-        case .priceAsc:
-            return items.sorted { lhs, rhs in
-                switch (lhs.priceDouble, rhs.priceDouble) {
-                case let (l?, r?): return l < r
-                case (_?, nil): return true
-                case (nil, _?): return false
-                default: return false
-                }
-            }
-        case .priceDesc:
-            return items.sorted { lhs, rhs in
-                switch (lhs.priceDouble, rhs.priceDouble) {
-                case let (l?, r?): return l > r
-                case (_?, nil): return true
-                case (nil, _?): return false
-                default: return false
-                }
-            }
-        case .newest:
-            // ISO-8601 strings sort lexicographically; falls back to updatedAt then keeps order.
-            return items.sorted { lhs, rhs in
-                let l = lhs.createdAt ?? lhs.updatedAt ?? ""
-                let r = rhs.createdAt ?? rhs.updatedAt ?? ""
-                return l > r
-            }
+        case .featured: return nil
+        case .priceAsc: return "price_asc"
+        case .priceDesc: return "price_desc"
         }
     }
 }

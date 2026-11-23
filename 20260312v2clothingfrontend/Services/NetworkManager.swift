@@ -325,3 +325,13 @@ extension URLError {
         }
     }
 }
+
+extension Error {
+    /// The request was cancelled on purpose (superseded load, view went away)
+    /// — never worth showing to the user.
+    nonisolated var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let urlError = self as? URLError, urlError.code == .cancelled { return true }
+        return false
+    }
+}
