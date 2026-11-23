@@ -83,6 +83,9 @@ struct ItemDetailView: View {
         }
     }
 
+    /// Full-screen zoomable viewer, opened by tapping a photo.
+    @State private var photoViewerSelection: PhotoViewerSelection?
+
     private var hasValidSourceURL: Bool {
         guard let urlString = item.sourceUrl, !urlString.isEmpty else { return false }
         return URL(string: urlString) != nil
@@ -93,6 +96,8 @@ struct ItemDetailView: View {
         if let c = item.category, !c.isEmpty { return true }
         if item.priceDouble == nil, let p = item.price, !p.isEmpty { return true }
         if let c = item.colors, !c.isEmpty { return true }
+        if let z = item.sizes, !z.isEmpty { return true }
+        if let r = item.retailer, !r.isEmpty { return true }
         return false
     }
 
@@ -103,11 +108,20 @@ struct ItemDetailView: View {
                 .foregroundStyle(Color.appOnHalftonePrimary)
                 .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
                 .fixedSize(horizontal: false, vertical: true)
-            if let priceDouble = item.priceDouble {
-                Text(formatPrice(priceDouble))
+            // Same "amount + currency code" format as the grids, in the
+            // item's own currency (this used to be hardcoded to USD).
+            if let price = item.displayPrice {
+                Text(price)
                     .font(.appDisplay(size: 22))
                     .foregroundStyle(Color.appAccent)
                     .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+            }
+            if item.inStock == false {
+                Label("Out of stock at the retailer", systemImage: "exclamationmark.circle.fill")
+                    .font(.appDisplay(size: 15))
+                    .foregroundStyle(Color.appOnHalftonePrimary)
+                    .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                    .accessibilityLabel("Out of stock at the retailer")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -133,7 +147,12 @@ struct ItemDetailView: View {
     /// explore) the pick records a fresh swipe directly.
     private var interactionCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionHeaderInCard(swipeRecord == nil ? "Save it" : "Your interaction")
+            sectionHeaderInCard(currentSwipeAction == nil ? "Save it" : "Your interaction")
+            if let current = currentSwipeAction {
+                Text("Currently: \(Self.swipeDisplayName(current))")
+                    .font(.appDisplay(size: 15))
+                    .foregroundStyle(Color.appSecondaryText)
+            }
             VStack(spacing: 10) {
                 ForEach(Self.interactionChoices, id: \.self) { action in
                     PopArtSelectionRow(
@@ -176,6 +195,20 @@ struct ItemDetailView: View {
         .popArtCardContainer()
     }
 
+    /// What the user last chose for this item, when known: picked on this
+    /// screen, passed in by the host (wardrobe/history), or found in the local
+    /// swipe-history cache (the item API does not return it).
+    private var currentSwipeAction: SwipeType? {
+        selectedAction ?? swipeRecord?.action
+    }
+
+    private func seedSwipeStateFromLocalHistory() {
+        guard selectedAction == nil, swipeRecord == nil else { return }
+        if let cached = SwipeWarmCache.load()?.records.first(where: { $0.itemId == item.id }) {
+            selectedAction = cached.action
+        }
+    }
+
     private static func swipeDisplayName(_ type: SwipeType) -> String {
         switch type {
         case .LOVE: return "Love"
@@ -190,17 +223,34 @@ struct ItemDetailView: View {
             sectionHeaderOnHalftone("Photos")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 16) {
-                    ForEach(item.imageUrls, id: \.self) { urlString in
-                        if let url = URL(string: urlString) {
-                            let nobg = Item.useBackgroundRemovedImages
-                                ? URL(string: urlString.imageUrlNoBg)
-                                : nil
-                            ItemDetailPhotoTile(url: url, fallbackUrl: nobg)
+                    ForEach(Array(detailPhotos.enumerated()), id: \.element.id) { index, photo in
+                        Button {
+                            photoViewerSelection = PhotoViewerSelection(photos: detailPhotos, startIndex: index)
+                        } label: {
+                            ItemDetailPhotoTile(url: photo.url, fallbackUrl: photo.fallbackUrl)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Photo \(index + 1) of \(detailPhotos.count)")
+                        .accessibilityHint("Opens full screen")
                     }
                 }
                 .padding(.vertical, 4)
             }
+        }
+        .fullScreenCover(item: $photoViewerSelection) { selection in
+            PhotoViewer(selection: selection)
+        }
+    }
+
+    /// Original photos (with the background-removed variant as fallback), deduplicated.
+    private var detailPhotos: [PhotoViewerPhoto] {
+        var seen = Set<URL>()
+        return item.imageUrls.compactMap { urlString in
+            guard let url = URL(string: urlString.normalizedAsHTTPURLString), seen.insert(url).inserted else { return nil }
+            let nobg = Item.useBackgroundRemovedImages
+                ? URL(string: urlString.imageUrlNoBg.normalizedAsHTTPURLString)
+                : nil
+            return PhotoViewerPhoto(url: url, fallbackUrl: nobg)
         }
     }
 
@@ -234,6 +284,12 @@ struct ItemDetailView: View {
             if let colors = item.colors, !colors.isEmpty {
                 chipRow(title: "Colors", values: colors)
             }
+            if let sizes = item.sizes, !sizes.isEmpty {
+                chipRow(title: "Sizes", values: sizes, normalizeTitles: false)
+            }
+            if let retailer = item.retailer, !retailer.isEmpty {
+                detailLabeledRow(label: "Retailer", value: retailer.displayNormalizedTitle)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -255,7 +311,7 @@ struct ItemDetailView: View {
     }
 
     private func footerMeta(_ createdAt: String) -> some View {
-        Text("Added \(createdAt)")
+        Text("Added \(item.addedDateText ?? createdAt)")
             .font(.appDisplay(size: 14))
             .foregroundStyle(Color.appOnHalftoneSecondary)
             .shadow(color: .black.opacity(0.25), radius: 2, x: 0, y: 1)
@@ -289,7 +345,7 @@ struct ItemDetailView: View {
         }
     }
 
-    private func chipRow(title: String, values: [String]) -> some View {
+    private func chipRow(title: String, values: [String], normalizeTitles: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.appDisplay(size: 14))
@@ -297,7 +353,7 @@ struct ItemDetailView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(values, id: \.self) { value in
-                        Text(value.displayNormalizedTitle)
+                        Text(normalizeTitles ? value.displayNormalizedTitle : value)
                             .font(.appDisplay(size: 15))
                             .foregroundStyle(Color.appPrimaryText)
                             .padding(.horizontal, 12)
@@ -312,13 +368,6 @@ struct ItemDetailView: View {
                 }
             }
         }
-    }
-
-    private func formatPrice(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "USD"
-        return formatter.string(from: NSNumber(value: value)) ?? "$\(value)"
     }
 
     // MARK: - More like this
@@ -346,6 +395,7 @@ struct ItemDetailView: View {
 
     /// Loads the similar-items rail. Non-fatal: on failure the rail just stays hidden.
     private func loadSimilar() async {
+        seedSwipeStateFromLocalHistory()
         guard similarItems.isEmpty else { return }
         do {
             let items = try await ItemService.fetchSimilarItems(id: item.id, limit: 12)
@@ -383,8 +433,14 @@ private struct SimilarItemTile: View {
             ZStack {
                 Color.white
                 if let url = imageURL {
-                    CachedAsyncImage(url: url, fallbackUrl: fallbackURL, loadFinished: $loaded)
-                        .aspectRatio(contentMode: .fill)
+                    CachedAsyncImage(
+                        url: url,
+                        fallbackUrl: fallbackURL,
+                        loadFinished: $loaded,
+                        maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                        retryOnFailure: true
+                    )
+                    .aspectRatio(contentMode: .fill)
                 } else {
                     Image(systemName: "photo")
                         .foregroundStyle(Color.appSecondaryText)
@@ -404,7 +460,7 @@ private struct SimilarItemTile: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 Spacer(minLength: 0)
                 if let price = item.priceDouble {
-                    Text(priceText(price))
+                    Text(Item.displayPrice(price, currency: item.currency))
                         .font(.appDisplay(size: 12))
                         .foregroundStyle(Color.appNeonPink)
                 }
@@ -424,14 +480,6 @@ private struct SimilarItemTile: View {
                 .offset(x: 4, y: 4)
         )
     }
-
-    private func priceText(_ value: Double) -> String {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.maximumFractionDigits = 2
-        let s = f.string(from: NSNumber(value: value)) ?? "\(value)"
-        return item.currency.map { "\(s) \($0)" } ?? s
-    }
 }
 
 // MARK: - Detail photo (ghost until loaded)
@@ -444,10 +492,14 @@ private struct ItemDetailPhotoTile: View {
 
     var body: some View {
         ZStack {
-            GhostBlock(height: 300, cornerRadius: PopArtCardStyle.cornerRadius - 2)
-                .frame(width: 300, height: 300)
-                .opacity(loadFinished ? 0 : 1)
-            CachedAsyncImage(url: url, fallbackUrl: fallbackUrl, loadFinished: $loadFinished)
+            // Out of the hierarchy once loaded: an opacity-0 skeleton would keep
+            // its shimmer timeline ticking for as long as the detail is open.
+            if !loadFinished {
+                GhostBlock(height: 300, cornerRadius: PopArtCardStyle.cornerRadius - 2)
+                    .frame(width: 300, height: 300)
+                    .transition(.opacity)
+            }
+            CachedAsyncImage(url: url, fallbackUrl: fallbackUrl, loadFinished: $loadFinished, retryOnFailure: true)
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 300, height: 300)
                 .clipped()

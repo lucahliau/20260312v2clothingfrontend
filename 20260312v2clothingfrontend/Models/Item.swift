@@ -49,6 +49,9 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
     let active: Bool?
     let createdAt: String?
     let updatedAt: String?
+    /// Retailer stock: `nil` unknown, `false` sold out / delisted. Lists hide
+    /// `false` server-side; detail, history and wardrobe can still return it.
+    let inStock: Bool?
 
     /// Combined image URLs: primary imageUrl first, then images array.
     var imageUrls: [String] {
@@ -110,7 +113,8 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
         lastVerifiedAt: String? = nil,
         active: Bool? = nil,
         createdAt: String? = nil,
-        updatedAt: String? = nil
+        updatedAt: String? = nil,
+        inStock: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -135,6 +139,7 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
         self.active = active
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.inStock = inStock
     }
 
     init(from decoder: Decoder) throws {
@@ -170,6 +175,8 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
         active = try container.decodeIfPresent(Bool.self, forKey: .active)
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        // Tolerant: a missing or oddly-typed value just means "unknown".
+        inStock = (try? container.decodeIfPresent(Bool.self, forKey: .inStock)) ?? nil
     }
 
     func hash(into hasher: inout Hasher) {
@@ -208,6 +215,18 @@ extension Item {
     /// `nil` when the item has no parseable price.
     var displayPrice: String? {
         priceDouble.map { Item.displayPrice($0, currency: currency) }
+    }
+
+    /// `createdAt` (ISO-8601 from the API) as a short human date, e.g.
+    /// "12 Nov 2026". `nil` when missing or unparseable.
+    var addedDateText: String? {
+        guard let createdAt, !createdAt.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        guard let date = withFraction.date(from: createdAt) ?? plain.date(from: createdAt) else { return nil }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 }
 
