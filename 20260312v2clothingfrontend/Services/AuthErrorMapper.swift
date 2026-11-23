@@ -41,6 +41,8 @@ enum AuthErrorMapper {
             }
         case .transient:
             return "Couldn't reach the server. Check your connection and try again."
+        case .serverUnreachable:
+            return NetworkError.serverUnreachableMessage
         case .decodingError, .noData:
             return "Unexpected response from the server. Try again."
         case .invalidURL, .unknown:

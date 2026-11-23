@@ -8,6 +8,7 @@ struct BrandStickyBar: View {
     let categorySelection: String?
     let genderSelection: String?
     let priceSelection: BrandPriceRange?
+    var onSaleOnly: Bool = false
     let sortOption: BrandSortOption
     let showCategoryChip: Bool
     let showGenderChip: Bool
@@ -15,6 +16,15 @@ struct BrandStickyBar: View {
     let onTapGender: () -> Void
     let onTapPrice: () -> Void
     let onTapSort: () -> Void
+
+    private var priceChipSelection: String {
+        switch (priceSelection, onSaleOnly) {
+        case let (range?, true): return "\(range.displayLabel), Sale"
+        case let (range?, false): return range.displayLabel
+        case (nil, true): return "On sale"
+        case (nil, false): return "All"
+        }
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -42,8 +52,8 @@ struct BrandStickyBar: View {
                 Button(action: onTapPrice) {
                     BrandStickyBarChipLabel(
                         title: "Price",
-                        selection: priceSelection?.displayLabel ?? "All",
-                        isFiltered: priceSelection != nil
+                        selection: priceChipSelection,
+                        isFiltered: priceSelection != nil || onSaleOnly
                     )
                 }
                 .buttonStyle(.plain)

@@ -24,6 +24,12 @@ final class ExploreViewModel {
     /// Whether more product result pages remain for the active query.
     private(set) var searchHasMore = false
     var errorMessage: String?
+    /// Set when the featured rail failed to load — the section shows this with
+    /// a Retry button instead of pretending there are no featured brands.
+    private(set) var featuredErrorMessage: String?
+    /// Set when a further page of product results failed; shown under the grid
+    /// with a Retry (scrolling alone no longer silently swallows it).
+    private(set) var loadMoreErrorMessage: String?
 
     private var searchDebounceTask: Task<Void, Never>?
     private var searchGeneration = 0
@@ -52,10 +58,45 @@ final class ExploreViewModel {
         }
     }
 
-    func loadFeaturedIfNeeded() async {
-        guard featuredBrands.isEmpty, !isLoadingFeatured else { return }
-        isLoadingFeatured = true
+    /// The server just became reachable again: load whatever failed while it
+    /// was away (featured rail, saved strip, the active search).
+    func reloadAfterServerRecovery() async {
         errorMessage = nil
+        async let saved: Void = refreshSavedBrands()
+        await loadFeaturedIfNeeded()
+        await saved
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           brandResults.isEmpty, productResults.isEmpty {
+            onSearchTextChanged()
+        }
+    }
+
+    func loadFeaturedIfNeeded() async {
+        guard featuredBrands.isEmpty else { return }
+        await loadFeatured()
+    }
+
+    /// Pull-to-refresh: reloads the featured rail and saved strip, or re-runs
+    /// the active search. Existing content stays on screen while it loads.
+    func refresh() async {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            async let saved: Void = refreshSavedBrands()
+            await loadFeatured()
+            await saved
+        } else {
+            searchDebounceTask?.cancel()
+            searchGeneration += 1
+            await performSearch(query: trimmed, generation: searchGeneration)
+        }
+    }
+
+    /// Fetches the featured rail. The skeleton only shows when nothing is on
+    /// screen yet, so a refresh never blanks the section.
+    func loadFeatured() async {
+        guard !isLoadingFeatured else { return }
+        isLoadingFeatured = true
+        featuredErrorMessage = nil
         defer { isLoadingFeatured = false }
         do {
             let entries = try await BrandService.fetchFeaturedBrands(limit: Self.featuredBrandLimit)
@@ -67,7 +108,9 @@ final class ExploreViewModel {
             )
             prefetchFeaturedCollageImages()
         } catch {
-            errorMessage = error.localizedDescription
+            // Shown inline (with Retry) when the rail is empty; a failed refresh
+            // over existing content keeps what's there.
+            featuredErrorMessage = error.localizedDescription
         }
     }
 
@@ -82,9 +125,8 @@ final class ExploreViewModel {
                 if urls.count >= 24 { break outer }
             }
         }
-        for u in urls {
-            ImageCacheService.shared.preload(from: u)
-        }
+        // One prefetcher (chunked); the old extra per-URL preload pass hit the
+        // same URLs a second time.
         Task.detached(priority: .utility) {
             await Self.prefetchCollageImagesAggressively(urls: urls)
         }
@@ -100,7 +142,10 @@ final class ExploreViewModel {
                 while k < j {
                     let url = urls[k]
                     group.addTask {
-                        _ = await ImageCacheService.shared.loadImage(from: url)
+                        _ = await ImageCacheService.shared.loadImage(
+                            from: url,
+                            maxPixelSize: ImageCacheService.thumbnailPixelSize
+                        )
                     }
                     k = urls.index(after: k)
                 }
@@ -117,6 +162,7 @@ final class ExploreViewModel {
             productResults = []
             isSearching = false
             searchHasMore = false
+            loadMoreErrorMessage = nil
             activeProductQuery = ""
             searchGeneration += 1
             return
@@ -138,6 +184,7 @@ final class ExploreViewModel {
     /// each cell now validates its own image lazily and drops itself on a 404.
     private func performSearch(query: String, generation: Int) async {
         errorMessage = nil
+        loadMoreErrorMessage = nil
         do {
             async let brandsTask = BrandService.fetchBrands(q: query, limit: Self.brandSearchLimit)
             async let pageTask = ItemService.fetchItemsPage(page: 1, limit: Self.searchPageSize, search: query)
@@ -168,8 +215,20 @@ final class ExploreViewModel {
 
     /// Infinite scroll for the product results grid (mirrors the brand grid).
     func loadMoreProductResultsIfNeeded(currentIndex: Int) async {
-        guard searchHasMore, !isSearching, !isLoadingMoreProducts else { return }
+        // After a failure, wait for the explicit Retry instead of re-firing on
+        // every cell appearance.
+        guard loadMoreErrorMessage == nil else { return }
         guard currentIndex >= productResults.count - searchNearEndWindow else { return }
+        await loadNextProductPage()
+    }
+
+    func retryLoadMoreProducts() async {
+        loadMoreErrorMessage = nil
+        await loadNextProductPage()
+    }
+
+    private func loadNextProductPage() async {
+        guard searchHasMore, !isSearching, !isLoadingMoreProducts else { return }
         isLoadingMoreProducts = true
         defer { isLoadingMoreProducts = false }
         let nextPage = searchCurrentPage + 1
@@ -186,7 +245,9 @@ final class ExploreViewModel {
             searchHasMore = (page.pagination?.totalPages ?? nextPage) > nextPage
             prefetchProductImages(fresh)
         } catch {
-            // Silent: keep what's shown; scrolling re-triggers the attempt.
+            guard generation == searchGeneration, query == activeProductQuery else { return }
+            // Keep what's shown; the grid footer offers a Retry.
+            loadMoreErrorMessage = error.localizedDescription
         }
     }
 
@@ -200,7 +261,7 @@ final class ExploreViewModel {
     private func prefetchProductImages(_ items: [Item]) {
         for item in items.prefix(24) {
             guard let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) else { continue }
-            ImageCacheService.shared.preload(from: url)
+            ImageCacheService.shared.preload(from: url, maxPixelSize: ImageCacheService.thumbnailPixelSize)
         }
     }
 }

@@ -74,7 +74,9 @@ private struct BrandImageCollage: View {
                     url: url,
                     fallbackUrl: item.secondOriginalImageURL,
                     loadFinished: bindingForCell(index),
-                    resetsLoadingBinding: false
+                    resetsLoadingBinding: false,
+                    maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                    retryOnFailure: true
                 )
                 .aspectRatio(contentMode: .fill)
             } else {
@@ -149,6 +151,9 @@ struct ExploreView: View {
         @Bindable var exploreModel = exploreModel
         VStack(spacing: 0) {
             PopArtTitleBar("Explore")
+            ServerUnreachableBanner {
+                await exploreModel.reloadAfterServerRecovery()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     searchBarContent(binding: $exploreModel.searchText, isFocused: $searchFieldFocused)
@@ -164,6 +169,9 @@ struct ExploreView: View {
                 .padding(.bottom, 16)
             }
             .scrollDismissesKeyboard(.interactively)
+            .refreshable {
+                await exploreModel.refresh()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
@@ -275,14 +283,55 @@ struct ExploreView: View {
         }
     }
 
+    /// Entry to the full A–Z brand list (Explore itself only shows a handful).
+    private var allBrandsEntry: some View {
+        NavigationLink {
+            AllBrandsView()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("All brands")
+                        .font(.appDisplay(size: 17))
+                        .foregroundStyle(Color.appPrimaryText)
+                    Text("Browse every brand A–Z")
+                        .font(.appDisplay(size: 14))
+                        .foregroundStyle(Color.appSecondaryText)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.appSecondaryText)
+            }
+            .padding(14)
+            .popArtCardContainer()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("All brands, browse every brand A to Z")
+    }
+
     @ViewBuilder
     private var featuredSection: some View {
         savedBrandsSection
-        if exploreModel.isLoadingFeatured {
+        allBrandsEntry
+        if exploreModel.isLoadingFeatured, exploreModel.featuredBrands.isEmpty {
             FeaturedBrandsSectionSkeletonView()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .allowsHitTesting(false)
                 .accessibilityLabel("Loading featured brands")
+        } else if exploreModel.featuredBrands.isEmpty, let message = exploreModel.featuredErrorMessage {
+            ContentUnavailableView {
+                Label("Couldn't load featured brands", systemImage: "wifi.exclamationmark")
+                    .font(.appDisplay(size: 20))
+                    .foregroundStyle(Color.appOnHalftonePrimary)
+            } description: {
+                Text(message)
+                    .font(.appDisplay(size: 15))
+                    .foregroundStyle(Color.appOnHalftoneSecondary)
+            } actions: {
+                ExploreRetryButton {
+                    await exploreModel.loadFeatured()
+                }
+            }
         } else if exploreModel.featuredBrands.isEmpty {
             ContentUnavailableView {
                 Label("No featured brands", systemImage: "sparkles")
@@ -292,6 +341,10 @@ struct ExploreView: View {
                 Text("Check back later.")
                     .font(.appDisplay(size: 17))
                     .foregroundStyle(Color.appOnHalftoneSecondary)
+            } actions: {
+                ExploreRetryButton(title: "Refresh") {
+                    await exploreModel.loadFeatured()
+                }
             }
         } else {
             Text("Featured brands")
@@ -392,6 +445,20 @@ struct ExploreView: View {
                         .allowsHitTesting(false)
                         .accessibilityLabel("Loading more products")
                 }
+
+                if let message = exploreModel.loadMoreErrorMessage {
+                    VStack(spacing: 10) {
+                        Text("Couldn't load more results. \(message)")
+                            .font(.appDisplay(size: 13))
+                            .foregroundStyle(Color.appOnHalftoneSecondary)
+                            .multilineTextAlignment(.center)
+                        ExploreRetryButton {
+                            await exploreModel.retryLoadMoreProducts()
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+                }
             }
 
             if !exploreModel.isSearching, exploreModel.brandResults.isEmpty, exploreModel.productResults.isEmpty {
@@ -435,8 +502,12 @@ private struct ExploreProductCell: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ExploreProductCellSkeleton()
-                .opacity(imageReady ? 0 : 1)
+            // Removed from the hierarchy once the image is ready — a skeleton
+            // hidden with opacity keeps its 45 fps shimmer timeline running.
+            if !imageReady {
+                ExploreProductCellSkeleton()
+                    .transition(.opacity)
+            }
             Group {
                 if carded {
                     cardedBody
@@ -476,7 +547,9 @@ private struct ExploreProductCell: View {
                 url: url,
                 fallbackUrl: item.secondOriginalImageURL,
                 loadFinished: $imageReady,
-                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                retryOnFailure: true
             )
             .scaledToFill()
         } else if let pair = item.imageUrlPairs.first, let url = URL(string: pair.primary) {
@@ -484,7 +557,9 @@ private struct ExploreProductCell: View {
                 url: url,
                 fallbackUrl: pair.fallback.flatMap { URL(string: $0) },
                 loadFinished: $imageReady,
-                onUnrecoverableHTTP404: onUnrecoverableHTTP404
+                onUnrecoverableHTTP404: onUnrecoverableHTTP404,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize,
+                retryOnFailure: true
             )
             .scaledToFill()
         } else {
@@ -563,10 +638,7 @@ private struct ExploreProductCell: View {
     }
 
     private func formatPrice(_ value: Double) -> String {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.maximumFractionDigits = 2
-        return f.string(from: NSNumber(value: value)) ?? "\(value)"
+        Item.formatPriceAmount(value)
     }
 }
 
@@ -620,8 +692,8 @@ struct BrandProductsView: View {
             LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                 BrandHeroHeader(
                     brandName: viewModel.brandName,
-                    itemCount: viewModel.items.count,
-                    hasMore: viewModel.hasMore,
+                    itemCount: viewModel.totalCount ?? viewModel.items.count,
+                    hasMore: viewModel.totalCount == nil && viewModel.hasMore,
                     theme: theme,
                     isSaved: viewModel.isSavedBrand,
                     onToggleSave: {
@@ -636,6 +708,8 @@ struct BrandProductsView: View {
                             .padding(.vertical, 16)
                             .allowsHitTesting(false)
                             .accessibilityLabel("Loading products")
+                    } else if viewModel.items.isEmpty, let message = viewModel.loadErrorMessage {
+                        loadFailedState(message: message)
                     } else if viewModel.items.isEmpty {
                         emptyState
                     } else {
@@ -658,12 +732,12 @@ struct BrandProductsView: View {
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     Button {
-                                        Task { try? await SwipeService.recordSwipe(itemId: item.id, type: .LOVE) }
+                                        Task { await viewModel.recordSwipe(itemId: item.id, type: .LOVE) }
                                     } label: {
                                         Label("Love", systemImage: "heart.fill")
                                     }
                                     Button {
-                                        Task { try? await SwipeService.recordSwipe(itemId: item.id, type: .LIKE) }
+                                        Task { await viewModel.recordSwipe(itemId: item.id, type: .LIKE) }
                                     } label: {
                                         Label("Like", systemImage: "hand.thumbsup.fill")
                                     }
@@ -694,6 +768,7 @@ struct BrandProductsView: View {
                             categorySelection: viewModel.selectedCategory,
                             genderSelection: viewModel.selectedGender,
                             priceSelection: viewModel.selectedPriceRange,
+                            onSaleOnly: viewModel.onSaleOnly,
                             sortOption: viewModel.sortOption,
                             showCategoryChip: !viewModel.facetCategories.isEmpty,
                             showGenderChip: !viewModel.facetGenders.isEmpty,
@@ -706,10 +781,12 @@ struct BrandProductsView: View {
                             categorySelection: viewModel.selectedCategory,
                             genderSelection: viewModel.selectedGender,
                             priceSelection: viewModel.selectedPriceRange,
+                            onSaleOnly: viewModel.onSaleOnly,
                             sortOption: viewModel.sortOption,
                             onClearCategory: { viewModel.setCategoryFilter(nil) },
                             onClearGender: { viewModel.setGenderFilter(nil) },
                             onClearPrice: { viewModel.setPriceFilter(nil) },
+                            onClearOnSale: { viewModel.setOnSaleOnly(false) },
                             onClearSort: { viewModel.setSortOption(.featured) }
                         )
                     }
@@ -738,7 +815,8 @@ struct BrandProductsView: View {
             await viewModel.loadInitial()
             await ImageCacheService.shared.warmMemoryFromDisk(
                 urls: viewModel.items.compactMap(\.firstOriginalImageURL),
-                maxUrls: 60
+                maxUrls: 60,
+                maxPixelSize: ImageCacheService.thumbnailPixelSize
             )
             await saved
         }
@@ -780,9 +858,42 @@ struct BrandProductsView: View {
                     .font(.appDisplay(size: 20))
                     .foregroundStyle(Color.appPrimaryText)
             } description: {
-                Text("No items match these filters.")
+                Text(viewModel.hasActiveFilters ? "No items match these filters." : "This brand has no products right now.")
                     .font(.appDisplay(size: 16))
                     .foregroundStyle(Color.appSecondaryText)
+            } actions: {
+                if viewModel.hasActiveFilters {
+                    ExploreRetryButton(title: "Clear filters") {
+                        viewModel.clearFilters()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .popArtCardContainer()
+        .padding(.horizontal, 20)
+        .padding(.trailing, PopArtCardStyle.shadowOffset)
+        .padding(.top, 20)
+    }
+
+    /// First page failed: say so and offer a Retry (not "No products").
+    private func loadFailedState(message: String) -> some View {
+        VStack(spacing: 14) {
+            ContentUnavailableView {
+                Label("Couldn't load products", systemImage: "wifi.exclamationmark")
+                    .font(.appDisplay(size: 20))
+                    .foregroundStyle(Color.appPrimaryText)
+            } description: {
+                Text(message)
+                    .font(.appDisplay(size: 15))
+                    .foregroundStyle(Color.appSecondaryText)
+            } actions: {
+                ExploreRetryButton {
+                    await viewModel.reload()
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
@@ -893,6 +1004,14 @@ struct BrandProductsView: View {
                                 filterOverlay = nil
                             }
                         }
+                        // Independent of the price band, so it toggles in place.
+                        PopArtSelectionRow(
+                            label: "On sale only",
+                            isSelected: viewModel.onSaleOnly
+                        ) {
+                            viewModel.setOnSaleOnly(!viewModel.onSaleOnly)
+                        }
+                        .padding(.top, 8)
                     case .sort:
                         ForEach(BrandSortOption.allCases) { option in
                             PopArtSelectionRow(

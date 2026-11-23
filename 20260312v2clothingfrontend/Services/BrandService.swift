@@ -2,16 +2,26 @@ import Foundation
 
 enum BrandService {
     /// Distinct brands with at least one active product; optional name filter.
-    static func fetchBrands(q: String? = nil, limit: Int = 20) async throws -> [BrandInfo] {
+    /// `minProducts` hides brands with fewer active products (server-side).
+    /// The server returns them sorted A–Z.
+    static func fetchBrands(q: String? = nil, limit: Int = 20, minProducts: Int? = nil) async throws -> [BrandInfo] {
         var queryItems: [URLQueryItem] = [URLQueryItem(name: "limit", value: "\(min(max(limit, 1), APIQueryLimits.maxBrands))")]
         if let q, !q.isEmpty {
             queryItems.append(URLQueryItem(name: "q", value: q))
+        }
+        if let minProducts, minProducts > 1 {
+            queryItems.append(URLQueryItem(name: "minProducts", value: "\(minProducts)"))
         }
         let response: BrandListResponse = try await NetworkManager.shared.request(
             "/brands",
             queryItems: queryItems
         )
         return response.brands
+    }
+
+    /// Every brand in the catalog (A–Z) for the "All brands" list.
+    static func fetchAllBrands(minProducts: Int? = nil) async throws -> [BrandInfo] {
+        try await fetchBrands(limit: APIQueryLimits.maxBrands, minProducts: minProducts)
     }
 
     /// Random sample of brands for explore UI.

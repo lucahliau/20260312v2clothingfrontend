@@ -2,31 +2,12 @@ import Foundation
 import Observation
 
 @MainActor
-private final class InitialFeedLoadCoordinator {
-    private var inflight: Task<Void, Never>?
-
-    func cancel() {
-        inflight?.cancel()
-        inflight = nil
-    }
-
-    func run(_ body: @escaping @MainActor () async -> Void) async {
-        if let t = inflight {
-            await t.value
-            return
-        }
-        let t = Task { await body() }
-        inflight = t
-        await t.value
-        inflight = nil
-    }
-}
-
-@MainActor
 @Observable
 final class FeedViewModel {
     private static let feedSwipeHintSeenKey = "feedSwipeHintSeen"
     private static let feedGenderFilterUserCustomizedKey = "feedGenderFilterUserCustomized"
+    private static let feedSelectedProductTypesKey = "feedSelectedProductTypes"
+    private static let feedSelectedGendersKey = "feedSelectedGenders"
 
     var items: [Item] = []
     /// Per-card recommendation metadata keyed by item id. Populated whenever
@@ -38,6 +19,9 @@ final class FeedViewModel {
     var errorMessage: String?
     private(set) var isFeedExhausted = false
     private(set) var loadMoreErrorMessage: String?
+    /// Set when a full (re)load failed and there is nothing to show — the Feed
+    /// renders this with a Retry instead of "No items".
+    private(set) var feedLoadErrorMessage: String?
 
     /// Lookup helper for views: returns `nil` when the item has no match
     /// metadata (e.g. hydrated from warm cache before the new fields were
@@ -52,8 +36,20 @@ final class FeedViewModel {
     /// Set after first successful feed fetch (including empty); used for stale checks.
     private(set) var lastFeedLoadAt: Date?
 
-    var selectedProductTypes: Set<ProductType> = []
-    var selectedGenders: Set<GenderFilter> = []
+    /// Persisted, so a relaunch keeps the same filters (and the warm cache,
+    /// which is fingerprinted by them, still matches).
+    var selectedProductTypes: Set<ProductType> = [] {
+        didSet {
+            guard selectedProductTypes != oldValue else { return }
+            UserDefaults.standard.set(selectedProductTypes.map(\.rawValue).sorted(), forKey: Self.feedSelectedProductTypesKey)
+        }
+    }
+    var selectedGenders: Set<GenderFilter> = [] {
+        didSet {
+            guard selectedGenders != oldValue else { return }
+            UserDefaults.standard.set(selectedGenders.map(\.rawValue).sorted(), forKey: Self.feedSelectedGendersKey)
+        }
+    }
 
     private let staleDuration: TimeInterval = 90
 
@@ -72,13 +68,34 @@ final class FeedViewModel {
     /// Single-flight guard so concurrent swipes never fire duplicate page fetches.
     private(set) var isLoadingMore = false
 
-    private let initialWarmLock = NSLock()
-    private var initialWarmRefreshTask: Task<Void, Never>?
+    /// Bumped whenever the deck's defining query changes (filters, explicit
+    /// reload, cache clear). Every response captures the generation it was
+    /// requested under and is dropped if a newer one exists, so the last
+    /// *request* wins rather than the last response to arrive, and an in-flight
+    /// load-more can't append old-filter cards.
+    @ObservationIgnored private var feedGeneration = 0
+    @ObservationIgnored private var filterReloadTask: Task<Void, Never>?
+    @ObservationIgnored private var initialWarmRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var warmCacheSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var imagePrefetchTask: Task<Void, Never>?
 
-    private let initialFeedLoadCoordinator = InitialFeedLoadCoordinator()
+    /// True while the user is dragging the top card or it is flying off. A
+    /// background refresh must not replace the deck then (the card under the
+    /// finger would vanish and the pending swipe would skip a fresh card).
+    @ObservationIgnored private var isCardInteractionActive = false
+
+    /// The most recent swipe, kept so it can be undone once.
+    private(set) var lastSwipe: (item: Item, action: SwipeType)?
 
     init() {
         showFeedSwipeHint = !UserDefaults.standard.bool(forKey: Self.feedSwipeHintSeenKey)
+        let defaults = UserDefaults.standard
+        if let raw = defaults.stringArray(forKey: Self.feedSelectedProductTypesKey) {
+            selectedProductTypes = Set(raw.compactMap(ProductType.init(rawValue:)))
+        }
+        if let raw = defaults.stringArray(forKey: Self.feedSelectedGendersKey) {
+            selectedGenders = Set(raw.compactMap(GenderFilter.init(rawValue:)))
+        }
     }
 
     private func markFeedSwipeHintSeenIfNeeded() {
@@ -99,30 +116,44 @@ final class FeedViewModel {
         currentIndex < items.count
     }
 
+    // MARK: - Loading
+
+    /// One feed request for the current filters + personalization.
+    private func fetchFeed(excludingIds: [String] = []) async throws -> (items: [Item], matches: [FeedMatch], hasMore: Bool) {
+        let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
+        let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
+        return try await ItemService.fetchFeedItemsWithMatches(
+            limit: Self.feedBatchLimit,
+            genders: genders,
+            productTypes: productTypes,
+            excludingIds: excludingIds,
+            personalization: personalization
+        )
+    }
+
     /// Tab appear: first load shows spinner unless warm cache hydrated items; later visits refresh only when stale.
     func loadIfNeeded() async {
         if lastFeedLoadAt == nil {
             if items.isEmpty {
-                isLoading = true
+                guard !isLoading else { return }
                 if hydrateFromWarmCacheIfNeeded() {
-                    isLoading = false
-                    initialWarmLock.lock()
-                    if initialWarmRefreshTask == nil {
-                        initialWarmRefreshTask = Task { await self.refreshInitialFromWarmCache() }
-                    }
-                    initialWarmLock.unlock()
+                    startInitialWarmRefreshIfNeeded()
                 } else {
-                    await loadItemsInitial()
+                    await loadItems()
                 }
             } else {
-                initialWarmLock.lock()
-                if initialWarmRefreshTask == nil {
-                    initialWarmRefreshTask = Task { await self.refreshInitialFromWarmCache() }
-                }
-                initialWarmLock.unlock()
+                startInitialWarmRefreshIfNeeded()
             }
         } else {
             await refreshIfStale()
+        }
+    }
+
+    private func startInitialWarmRefreshIfNeeded() {
+        guard initialWarmRefreshTask == nil else { return }
+        initialWarmRefreshTask = Task { [weak self] in
+            await self?.refreshInitialFromWarmCache()
+            self?.initialWarmRefreshTask = nil
         }
     }
 
@@ -133,30 +164,51 @@ final class FeedViewModel {
         await loadItems()
     }
 
-    /// Forced reload (filters, explicit refresh).
-    func loadItems() async {
-        isLoading = true
+    /// The server just became reachable again (see `ServerUnreachableBanner`):
+    /// refill the deck if it ran dry or never loaded; otherwise leave the
+    /// user's current cards alone and just top up.
+    func reloadAfterServerRecovery() async {
         errorMessage = nil
-        defer { isLoading = false }
-        do {
-            try await fetchAndApplyFeedFromNetwork()
-        } catch {
-            errorMessage = error.localizedDescription
+        if items.isEmpty || !hasMoreItems {
+            await loadItems()
+        } else {
+            await loadMoreIfNeeded()
         }
     }
 
-    private func fetchAndApplyFeedFromNetwork() async throws {
-        let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-        let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-        let result = try await ItemService.fetchFeedItemsWithMatches(limit: Self.feedBatchLimit, genders: genders, productTypes: productTypes, personalization: personalization)
-        items = result.items
-        replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
-        currentIndex = 0
-        isFeedExhausted = !result.hasMore
-        loadMoreErrorMessage = nil
-        lastFeedLoadAt = Date()
-        scheduleFeedImagePrefetch()
-        persistFeedWarmCache()
+    /// Forced reload (filters, explicit refresh). Supersedes every feed request
+    /// already in flight.
+    func loadItems() async {
+        feedGeneration += 1
+        let generation = feedGeneration
+        isLoading = true
+        errorMessage = nil
+        feedLoadErrorMessage = nil
+        do {
+            let result = try await fetchFeed()
+            guard generation == feedGeneration else { return }
+            items = result.items
+            replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
+            currentIndex = 0
+            lastSwipe = nil
+            isFeedExhausted = !result.hasMore
+            loadMoreErrorMessage = nil
+            lastFeedLoadAt = Date()
+            scheduleFeedImagePrefetch()
+            persistFeedWarmCache()
+        } catch {
+            guard generation == feedGeneration else { return }
+            if !error.isCancellation {
+                if hasMoreItems {
+                    // Cards are still on screen (e.g. a personalization reload):
+                    // tell the user, keep the deck.
+                    errorMessage = error.localizedDescription
+                } else {
+                    feedLoadErrorMessage = error.localizedDescription
+                }
+            }
+        }
+        isLoading = false
     }
 
     /// Replace the match map with the fresh batch; drop entries for items no
@@ -173,26 +225,6 @@ final class FeedViewModel {
     /// (used by paginated loads and silent refreshes).
     private func mergeMatches(_ matches: [FeedMatch]) {
         for m in matches { matchesByItemId[m.itemId] = m }
-    }
-
-    private func loadItemsInitial() async {
-        await initialFeedLoadCoordinator.run {
-            await self.performInitialFeedLoad()
-        }
-    }
-
-    private func performInitialFeedLoad() async {
-        guard !Task.isCancelled else { return }
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        do {
-            guard !Task.isCancelled else { return }
-            try await fetchAndApplyFeedFromNetwork()
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = error.localizedDescription
-        }
     }
 
     private func hydrateFromWarmCacheIfNeeded() -> Bool {
@@ -215,29 +247,18 @@ final class FeedViewModel {
 
     /// First launch after warm JSON hydrate: fetch fresh feed without blocking on the loading skeleton.
     private func refreshInitialFromWarmCache() async {
-        defer {
-            initialWarmLock.lock()
-            initialWarmRefreshTask = nil
-            initialWarmLock.unlock()
-        }
+        let generation = feedGeneration
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let excludedIds = exclusionIdsForNextPage()
-            let result = try await ItemService.fetchFeedItemsWithMatches(
-                limit: Self.feedBatchLimit,
-                genders: genders,
-                productTypes: productTypes,
-                excludingIds: excludedIds,
-                personalization: personalization
-            )
+            let result = try await fetchFeed(excludingIds: exclusionIdsForNextPage())
+            guard generation == feedGeneration else { return }
             // Warm cache hydrated the SAME leftover deck we showed last launch —
             // that's the "every open shows the same posts" complaint. As long as
-            // the user hasn't started swiping yet (currentIndex == 0), swap those
-            // stale leftovers for the fresh, non-repeating batch the server just
-            // returned (it excluded the warm ids). If they've already begun
-            // swiping, append instead so we don't yank cards out from under them.
-            if currentIndex == 0, !result.items.isEmpty {
+            // the user hasn't started swiping yet (currentIndex == 0) and isn't
+            // mid-drag on the top card, swap those stale leftovers for the fresh,
+            // non-repeating batch the server just returned (it excluded the warm
+            // ids). Otherwise append, so we never yank a card out from under a
+            // finger or let a swipe that is mid-exit skip a fresh card.
+            if currentIndex == 0, !isCardInteractionActive, !result.items.isEmpty {
                 items = result.items
                 replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
                 currentIndex = 0
@@ -253,13 +274,20 @@ final class FeedViewModel {
         }
     }
 
+    /// Debounced: a burst of swipes produces one snapshot. The (small) encode
+    /// runs here; the file write happens on a background queue.
     private func persistFeedWarmCache() {
-        let start = min(currentIndex, items.count)
-        FeedWarmCache.save(
-            items: items[start...],
-            productTypes: selectedProductTypes,
-            genders: selectedGenders
-        )
+        warmCacheSaveTask?.cancel()
+        warmCacheSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let start = min(self.currentIndex, self.items.count)
+            FeedWarmCache.save(
+                items: self.items[start...],
+                productTypes: self.selectedProductTypes,
+                genders: self.selectedGenders
+            )
+        }
     }
 
     private static func feedWarmImageURLs(for items: [Item]) -> [URL] {
@@ -273,26 +301,15 @@ final class FeedViewModel {
     }
 
     private func refreshIfStale() async {
-        guard let last = lastFeedLoadAt else {
-            await refreshSilently()
-            return
-        }
-        if Date().timeIntervalSince(last) < staleDuration { return }
+        if let last = lastFeedLoadAt, Date().timeIntervalSince(last) < staleDuration { return }
         await refreshSilently()
     }
 
     private func refreshSilently() async {
+        let generation = feedGeneration
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let excludedIds = exclusionIdsForNextPage()
-            let result = try await ItemService.fetchFeedItemsWithMatches(
-                limit: Self.feedBatchLimit,
-                genders: genders,
-                productTypes: productTypes,
-                excludingIds: excludedIds,
-                personalization: personalization
-            )
+            let result = try await fetchFeed(excludingIds: exclusionIdsForNextPage())
+            guard generation == feedGeneration else { return }
             appendFeedPage(result.items, matches: result.matches)
             isFeedExhausted = !result.hasMore
             lastFeedLoadAt = Date()
@@ -303,13 +320,29 @@ final class FeedViewModel {
         }
     }
 
+    // MARK: - Filters
+
+    /// Filter changes invalidate everything in flight immediately, then reload
+    /// once after a short pause — tapping three options in the sheet is one
+    /// request for the final selection, not three racing ones.
+    private func scheduleFilterReload() {
+        feedGeneration += 1
+        isLoading = true
+        filterReloadTask?.cancel()
+        filterReloadTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.loadItems()
+        }
+    }
+
     func toggleProductType(_ type: ProductType) {
         if selectedProductTypes.contains(type) {
             selectedProductTypes.remove(type)
         } else {
             selectedProductTypes.insert(type)
         }
-        Task { await loadItems() }
+        scheduleFilterReload()
     }
 
     func toggleGender(_ gender: GenderFilter) {
@@ -319,7 +352,18 @@ final class FeedViewModel {
         } else {
             selectedGenders.insert(gender)
         }
-        Task { await loadItems() }
+        scheduleFilterReload()
+    }
+
+    /// "Clear filters" in the empty state. An explicit choice, so the gender
+    /// filter counts as customised (the profile default won't silently return).
+    func clearFilters() {
+        if !selectedGenders.isEmpty {
+            UserDefaults.standard.set(true, forKey: Self.feedGenderFilterUserCustomizedKey)
+        }
+        selectedProductTypes = []
+        selectedGenders = []
+        scheduleFilterReload()
     }
 
     /// When `false`, `selectedGenders` follows profile (`User.gender`) until the user edits gender filters in the sheet.
@@ -339,10 +383,10 @@ final class FeedViewModel {
 
     /// Drops the persisted feed warm cache, removes cached images for current feed URLs, resets in-memory feed state, then refetches and preloads in the background.
     func clearPersistedFeedCache() {
-        initialWarmLock.lock()
         initialWarmRefreshTask?.cancel()
         initialWarmRefreshTask = nil
-        initialWarmLock.unlock()
+        warmCacheSaveTask?.cancel()
+        warmCacheSaveTask = nil
 
         for item in items {
             guard let pair = item.imageUrlPairs.first else { continue }
@@ -358,17 +402,13 @@ final class FeedViewModel {
         items = []
         matchesByItemId = [:]
         currentIndex = 0
+        lastSwipe = nil
         isFeedExhausted = false
         loadMoreErrorMessage = nil
         lastFeedLoadAt = nil
         errorMessage = nil
 
-        Task { @MainActor in
-            await initialFeedLoadCoordinator.cancel()
-            await initialFeedLoadCoordinator.run {
-                await self.performInitialFeedLoad()
-            }
-        }
+        Task { await loadItems() }
     }
 
     /// Removes the current top card when its images fail with HTTP 404 (after primary + fallback). Clears cached entries for those URLs and persists the feed.
@@ -390,10 +430,24 @@ final class FeedViewModel {
         Task { await loadMoreIfNeeded() }
     }
 
+    // MARK: - Swiping
+
+    /// The top card reports drag start / end (or exit completion) here.
+    func setCardInteractionActive(_ active: Bool) {
+        isCardInteractionActive = active
+    }
+
     @discardableResult
     func recordSwipe(item: Item, action: SwipeType) async -> Bool {
         let itemId = item.id
-        currentIndex += 1
+        isCardInteractionActive = false
+        // Only advance when the swiped card is still the top of the deck. If the
+        // deck was replaced while the card was flying off, advancing would skip
+        // a card the user never saw; the swipe itself is still recorded.
+        if currentIndex < items.count, items[currentIndex].id == itemId {
+            currentIndex += 1
+            lastSwipe = (item, action)
+        }
         markFeedSwipeHintSeenIfNeeded()
         scheduleFeedImagePrefetch()
         // Fire-and-forget: enqueue locally (deduped + persisted) and let the
@@ -411,29 +465,47 @@ final class FeedViewModel {
         return true
     }
 
+    /// Whether the last swipe can be taken back (its card is still right
+    /// behind the current top card).
+    var canUndoLastSwipe: Bool {
+        guard let lastSwipe, currentIndex > 0, currentIndex <= items.count else { return false }
+        return items[currentIndex - 1].id == lastSwipe.item.id
+    }
+
+    /// Brings the last swiped card back to the top of the deck. If the swipe
+    /// has not been uploaded yet it is simply dropped from the local queue. If
+    /// it already reached the server there is no per-item delete endpoint, so
+    /// it stays recorded until the user swipes the restored card again — which
+    /// overwrites it (POST /swipes is an upsert, last action wins).
+    func undoLastSwipe() {
+        guard canUndoLastSwipe, let swipe = lastSwipe else { return }
+        lastSwipe = nil
+        currentIndex -= 1
+        persistFeedWarmCache()
+        let itemId = swipe.item.id
+        Task { await PendingSwipeQueue.shared.remove(itemId: itemId) }
+    }
+
     func loadMoreIfNeeded() async {
         let remaining = items.count - currentIndex
         guard remaining < Self.loadMoreThreshold else { return }
         guard !isFeedExhausted else { return }
-        guard !isLoadingMore else { return }
+        guard !isLoadingMore, !isLoading else { return }
+        let generation = feedGeneration
         isLoadingMore = true
         loadMoreErrorMessage = nil
         defer { isLoadingMore = false }
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let result = try await ItemService.fetchFeedItemsWithMatches(
-                limit: Self.feedBatchLimit,
-                genders: genders,
-                productTypes: productTypes,
-                excludingIds: exclusionIdsForNextPage(),
-                personalization: personalization
-            )
+            let result = try await fetchFeed(excludingIds: exclusionIdsForNextPage())
+            // Filters changed (or the deck was reloaded) while this page was in
+            // flight: its cards belong to the old query.
+            guard generation == feedGeneration else { return }
             appendFeedPage(result.items, matches: result.matches)
             isFeedExhausted = !result.hasMore
             persistFeedWarmCache()
             scheduleFeedImagePrefetch()
         } catch {
+            guard generation == feedGeneration, !error.isCancellation else { return }
             loadMoreErrorMessage = error.localizedDescription
         }
     }
@@ -446,7 +518,7 @@ final class FeedViewModel {
     /// exclusions — the server still hides the ~1000 most-recent swipes), which
     /// re-serves older, no-longer-recently-swiped items and keeps the feed
     /// continuous. Rate-limited so a genuinely dry catalog doesn't hot-loop.
-    private var lastExhaustionRecoveryAt: Date?
+    @ObservationIgnored private var lastExhaustionRecoveryAt: Date?
     private(set) var isRecoveringFeed = false
 
     func attemptExhaustionRecovery() async {
@@ -455,19 +527,15 @@ final class FeedViewModel {
         lastExhaustionRecoveryAt = Date()
         isRecoveringFeed = true
         defer { isRecoveringFeed = false }
+        let generation = feedGeneration
         do {
-            let genders = selectedGenders.isEmpty ? nil : selectedGenders.map(\.rawValue)
-            let productTypes = selectedProductTypes.isEmpty ? nil : selectedProductTypes.map(\.rawValue)
-            let result = try await ItemService.fetchFeedItemsWithMatches(
-                limit: Self.feedBatchLimit,
-                genders: genders,
-                productTypes: productTypes,
-                personalization: personalization
-            )
+            let result = try await fetchFeed()
+            guard generation == feedGeneration else { return }
             if !result.items.isEmpty {
                 items = result.items
                 replaceMatches(with: result.matches, retainingIds: Set(result.items.map(\.id)))
                 currentIndex = 0
+                lastSwipe = nil
                 loadMoreErrorMessage = nil
                 scheduleFeedImagePrefetch()
                 persistFeedWarmCache()
@@ -499,63 +567,43 @@ final class FeedViewModel {
         mergeMatches(matches.filter { appendedIds.contains($0.itemId) })
     }
 
-    private func scheduleFeedImagePrefetch() {
-        prefetchUpcomingImages()
-        scheduleAggressiveImagePrefetch()
-    }
+    // MARK: - Image prefetch
 
-    func prefetchUpcomingImages() {
+    /// Warms the upcoming window with ONE prefetcher: the previous pass is
+    /// cancelled, URLs already in memory are skipped, and a card's fallback
+    /// (original photo) is only fetched when its primary (background-removed)
+    /// image fails — the same order `CachedAsyncImage` uses — instead of always
+    /// downloading both.
+    private func scheduleFeedImagePrefetch() {
         let end = min(currentIndex + imagePrefetchWindow, items.count)
         guard currentIndex < end else { return }
-        for i in currentIndex..<end {
-            let item = items[i]
-            guard let pair = item.imageUrlPairs.first else { continue }
-            if let url = URL(string: pair.primary) {
-                ImageCacheService.shared.preload(from: url)
-            }
-            if let fb = pair.fallback, let url = URL(string: fb) {
-                ImageCacheService.shared.preload(from: url)
-            }
-        }
-    }
-
-    /// Awaits `loadImage` for the upcoming window so memory cache is warm before cards appear.
-    func scheduleAggressiveImagePrefetch() {
-        let window = imagePrefetchWindow
-        let snapshot = items
-        let idx = currentIndex
-        Task {
-            await prefetchWindowAsync(items: snapshot, startIndex: idx, window: window)
-        }
-    }
-
-    private func prefetchWindowAsync(items: [Item], startIndex: Int, window: Int) async {
-        let end = min(startIndex + window, items.count)
-        guard startIndex < end else { return }
-        var urls: [URL] = []
-        for i in startIndex..<end {
-            let item = items[i]
-            guard let pair = item.imageUrlPairs.first else { continue }
-            if let url = URL(string: pair.primary) { urls.append(url) }
-            if let fb = pair.fallback, let url = URL(string: fb) { urls.append(url) }
-        }
+        var pairs: [(primary: URL, fallback: URL?)] = []
         var seen = Set<String>()
-        let unique = urls.filter { seen.insert($0.absoluteString).inserted }
-        let chunkSize = 5
-        var i = unique.startIndex
-        while i < unique.endIndex {
-            let j = unique.index(i, offsetBy: chunkSize, limitedBy: unique.endIndex) ?? unique.endIndex
-            await withTaskGroup(of: Void.self) { group in
-                var k = i
-                while k < j {
-                    let url = unique[k]
-                    group.addTask {
-                        _ = await ImageCacheService.shared.loadImage(from: url)
+        for item in items[currentIndex..<end] {
+            guard let pair = item.imageUrlPairs.first, let primary = URL(string: pair.primary) else { continue }
+            guard seen.insert(primary.absoluteString).inserted else { continue }
+            if ImageCacheService.shared.image(for: primary) != nil { continue }
+            pairs.append((primary, pair.fallback.flatMap { URL(string: $0) }))
+        }
+        imagePrefetchTask?.cancel()
+        guard !pairs.isEmpty else { return }
+        imagePrefetchTask = Task {
+            let chunkSize = 4
+            var index = 0
+            while index < pairs.count, !Task.isCancelled {
+                let chunk = pairs[index..<min(index + chunkSize, pairs.count)]
+                await withTaskGroup(of: Void.self) { group in
+                    for pair in chunk {
+                        group.addTask {
+                            if await ImageCacheService.shared.loadImage(from: pair.primary) == nil,
+                               let fallback = pair.fallback {
+                                _ = await ImageCacheService.shared.loadImage(from: fallback)
+                            }
+                        }
                     }
-                    k = unique.index(after: k)
                 }
+                index += chunkSize
             }
-            i = j
         }
     }
 }

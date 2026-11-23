@@ -30,7 +30,11 @@ enum BrandImagePrefetcher {
                 while k < j {
                     let url = urls[k]
                     group.addTask {
-                        _ = await ImageCacheService.shared.loadImage(from: url)
+                        // Grid cells show thumbnails; warm that variant.
+                        _ = await ImageCacheService.shared.loadImage(
+                            from: url,
+                            maxPixelSize: ImageCacheService.thumbnailPixelSize
+                        )
                     }
                     k = urls.index(after: k)
                 }
