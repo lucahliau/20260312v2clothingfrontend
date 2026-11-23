@@ -66,6 +66,9 @@ actor PendingSwipeQueue {
             entries.removeFirst(entries.count - Self.maxEntries)
         }
         persist()
+        // Tell the Wardrobe now (an un-like disappears immediately); the
+        // matching "synced" post follows from `flush()`.
+        SwipeChange.post(itemId: itemId, action: action.rawValue, synced: false)
         // While backing off after a failure, let the backoff timer own the retry
         // cadence (a new swipe mustn't reset it and hammer a struggling server).
         guard consecutiveFailures == 0 else { return }
@@ -114,7 +117,12 @@ actor PendingSwipeQueue {
         loadIfNeeded()
         guard !isFlushing, !entries.isEmpty else { return }
         isFlushing = true
-        defer { isFlushing = false }
+        var didSync = false
+        defer {
+            isFlushing = false
+            // The server now has these swipes — let the Wardrobe refetch.
+            if didSync { SwipeChange.post(synced: true) }
+        }
 
         while !entries.isEmpty {
             let chunk = Array(entries.prefix(Self.batchSize))
@@ -130,6 +138,7 @@ actor PendingSwipeQueue {
                 entries.removeAll { sent.contains($0) }
                 persist()
                 consecutiveFailures = 0
+                didSync = true
             } catch {
                 if Self.isPermanentRejection(error) {
                     let sent = Set(chunk)

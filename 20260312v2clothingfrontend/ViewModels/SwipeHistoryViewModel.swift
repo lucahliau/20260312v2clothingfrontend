@@ -47,6 +47,12 @@ final class SwipeHistoryViewModel {
     /// afterwards so the latest server state always wins.
     private var likedReloadQueued = false
 
+    private var changeRefreshTask: Task<Void, Never>?
+    /// A like the list doesn't hold yet is waiting on the server. Starts
+    /// `true` so swipes queued by a previous session are picked up by the
+    /// first flush. Keeps dislike-only batches from triggering refetches.
+    private var hasUnfetchedLike = true
+
     /// Sections in display order: Love, Like, Neutral, Dislike
     private static let sectionOrder: [SwipeType] = [.LOVE, .LIKE, .NEUTRAL, .DISLIKE]
 
@@ -77,6 +83,66 @@ final class SwipeHistoryViewModel {
                 await ImageCacheService.shared.warmMemoryFromDisk(urls: urls)
             }
         }
+        observeSwipeChanges()
+    }
+
+    // MARK: - Live updates
+
+    /// Swipes recorded anywhere (feed, Explore, item detail, offline queue)
+    /// are announced via `.swipesDidChange`, so the Wardrobe never waits for
+    /// the staleness window. The observer lives as long as the process; it
+    /// only holds `self` weakly.
+    private func observeSwipeChanges() {
+        NotificationCenter.default.addObserver(
+            forName: .swipesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let itemId = note.userInfo?[SwipeChange.itemIdKey] as? String
+            let action = (note.userInfo?[SwipeChange.actionKey] as? String).flatMap(SwipeType.init(rawValue:))
+            let synced = (note.userInfo?[SwipeChange.syncedKey] as? Bool) ?? false
+            Task { @MainActor [weak self] in
+                self?.handleSwipeChange(itemId: itemId, action: action, synced: synced)
+            }
+        }
+    }
+
+    private func handleSwipeChange(itemId: String?, action: SwipeType?, synced: Bool) {
+        // What can be applied locally is applied at once: an un-like leaves
+        // the Wardrobe, a like<->love change updates in place.
+        if let itemId, let action {
+            if let idx = likedRecords.firstIndex(where: { $0.itemId == itemId }) {
+                let existing = likedRecords[idx]
+                if !Self.isLiked(action) {
+                    likedRecords.remove(at: idx)
+                    persistLikedIfComplete()
+                } else if existing.action != action {
+                    likedRecords[idx] = SwipeRecord(
+                        id: existing.id,
+                        userId: existing.userId,
+                        itemId: existing.itemId,
+                        action: action,
+                        item: existing.item,
+                        createdAt: existing.createdAt
+                    )
+                    persistLikedIfComplete()
+                }
+            } else if Self.isLiked(action) {
+                hasUnfetchedLike = true
+            }
+        }
+        // A brand-new like needs its record (id + embedded item) from the
+        // server, which is only there once the swipe has synced.
+        guard synced else { return }
+        historyLoadedAt = nil
+        guard hasUnfetchedLike else { return }
+        changeRefreshTask?.cancel()
+        changeRefreshTask = Task { [weak self] in
+            // Coalesce bursts (a batch flush plus direct posts).
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            await self?.reloadLiked()
+        }
     }
 
     // MARK: - Liked loading
@@ -104,6 +170,7 @@ final class SwipeHistoryViewModel {
             guard let self else { return }
             repeat {
                 self.likedReloadQueued = false
+                self.hasUnfetchedLike = false
                 await self.performLikedLoad()
             } while self.likedReloadQueued
             self.likedLoadTask = nil
