@@ -5,7 +5,8 @@ enum HealthService {
     static func checkHealth() async throws -> HealthResponse {
         try await NetworkManager.shared.request(
             "/health",
-            authenticated: false
+            authenticated: false,
+            timeout: 6
         )
     }
 }

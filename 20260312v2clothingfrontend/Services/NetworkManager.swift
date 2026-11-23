@@ -17,7 +17,15 @@ enum NetworkError: LocalizedError {
     /// Refresh failed for a non-auth reason (timeout, 5xx, DNS, etc). Tokens
     /// are intentionally left alone — the user is *not* logged out.
     case transient(underlying: Error?)
+    /// The request never got an HTTP response: the server could not be
+    /// reached (Tailscale off, home server asleep, DNS, TLS, timeout). Tokens
+    /// are never touched for this — the user is *not* logged out.
+    case serverUnreachable(underlying: URLError)
     case unknown(Error)
+
+    /// One message for every "could not talk to the server" failure, so the
+    /// many call sites that surface `localizedDescription` say something useful.
+    nonisolated static let serverUnreachableMessage = "Can't reach the Clothedd server. Check that Tailscale is on."
 
     var errorDescription: String? {
         switch self {
@@ -26,7 +34,8 @@ enum NetworkError: LocalizedError {
         case .decodingError(let err): return "Decoding error: \(err.localizedDescription)"
         case .serverError(let status, let msg, _): return "Server error \(status): \(msg ?? "Unknown")"
         case .unauthorized: return "Session expired. Please log in again."
-        case .transient: return "Couldn't reach the server. Check your connection and try again."
+        case .transient: return "The Clothedd server isn't responding properly right now. Try again in a moment."
+        case .serverUnreachable: return Self.serverUnreachableMessage
         case .unknown(let err): return err.localizedDescription
         }
     }
@@ -60,8 +69,18 @@ final class NetworkManager {
     static let shared = NetworkManager()
 
     let baseURL = "https://ls-macbook-air.taild99b83.ts.net:8445"
-    private let session = URLSession.shared
+    /// Dedicated session: the server lives on a private Tailscale network, so a
+    /// dead route should fail in seconds rather than URLSession.shared's 60 s.
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = NetworkManager.requestTimeout
+        config.timeoutIntervalForResource = 120
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
     private let tokenRefresher = TokenRefresher()
+
+    nonisolated static let requestTimeout: TimeInterval = 15
 
     private init() {}
 
@@ -79,13 +98,14 @@ final class NetworkManager {
         method: String = "GET",
         body: (any Encodable & Sendable)? = nil,
         queryItems: [URLQueryItem]? = nil,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
     ) async throws -> T {
         do {
-            return try await performRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated)
+            return try await performRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated, timeout: timeout)
         } catch NetworkError.unauthorized where authenticated {
             try await refreshTokens()
-            return try await performRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated)
+            return try await performRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated, timeout: timeout)
         }
     }
 
@@ -124,10 +144,12 @@ final class NetworkManager {
         method: String,
         body: (any Encodable & Sendable)?,
         queryItems: [URLQueryItem]?,
-        authenticated: Bool
+        authenticated: Bool,
+        timeout: TimeInterval? = nil
     ) async throws -> T {
-        let request = try buildRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated)
-        let (data, response) = try await session.data(for: request)
+        var request = try buildRequest(endpoint, method: method, body: body, queryItems: queryItems, authenticated: authenticated)
+        if let timeout { request.timeoutInterval = timeout }
+        let (data, response) = try await send(request)
         try validateResponse(response, data: data)
         if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), data.isEmpty {
             throw NetworkError.noData
@@ -150,8 +172,23 @@ final class NetworkManager {
         authenticated: Bool
     ) async throws {
         let request = try buildRequest(endpoint, method: method, body: body, queryItems: nil, authenticated: authenticated)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await send(request)
         try validateResponse(response, data: data)
+    }
+
+    /// Every call to our own server goes through here. Transport failures
+    /// (no HTTP response at all) become `NetworkError.serverUnreachable` and
+    /// feed `ServerReachability`; any HTTP response — even a 500 — proves the
+    /// server is reachable. Cancellation passes through untouched.
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            let result = try await session.data(for: request)
+            ServerReachability.shared.noteRequestSucceeded()
+            return result
+        } catch let urlError as URLError where urlError.isServerUnreachable {
+            ServerReachability.shared.noteRequestFailed()
+            throw NetworkError.serverUnreachable(underlying: urlError)
+        }
     }
 
     private func buildRequest(
@@ -241,10 +278,13 @@ final class NetworkManager {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await send(request)
         } catch {
-            // Network failure (timeout, DNS, offline). The tokens are still
-            // potentially valid — never log the user out for connectivity.
+            // Network failure (timeout, DNS, offline, Tailscale off). The tokens
+            // are still potentially valid — never log the user out for
+            // connectivity. `send` already typed the common transport failures
+            // as `.serverUnreachable`; keep that so the UI message is the same.
+            if case NetworkError.serverUnreachable = error { throw error }
             throw NetworkError.transient(underlying: error)
         }
 
@@ -265,5 +305,23 @@ final class NetworkManager {
         let tokens = try decoder.decode(TokenResponse.self, from: data)
         KeychainManager.save(key: KeychainManager.accessTokenKey, data: tokens.accessToken)
         KeychainManager.save(key: KeychainManager.refreshTokenKey, data: tokens.refreshToken)
+    }
+}
+
+extension URLError {
+    /// Transport-level failures that mean "the server could not be reached"
+    /// (as opposed to cancellation or a malformed request).
+    nonisolated var isServerUnreachable: Bool {
+        switch code {
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .timedOut,
+             .networkConnectionLost, .notConnectedToInternet,
+             .secureConnectionFailed, .serverCertificateUntrusted,
+             .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot, .clientCertificateRejected,
+             .dataNotAllowed, .internationalRoamingOff:
+            return true
+        default:
+            return false
+        }
     }
 }

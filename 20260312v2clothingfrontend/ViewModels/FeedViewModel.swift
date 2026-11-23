@@ -133,6 +133,18 @@ final class FeedViewModel {
         await loadItems()
     }
 
+    /// The server just became reachable again (see `ServerUnreachableBanner`):
+    /// refill the deck if it ran dry or never loaded; otherwise leave the
+    /// user's current cards alone and just top up.
+    func reloadAfterServerRecovery() async {
+        errorMessage = nil
+        if items.isEmpty || !hasMoreItems {
+            await loadItems()
+        } else {
+            await loadMoreIfNeeded()
+        }
+    }
+
     /// Forced reload (filters, explicit refresh).
     func loadItems() async {
         isLoading = true

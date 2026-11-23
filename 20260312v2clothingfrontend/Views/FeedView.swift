@@ -30,35 +30,8 @@ struct FeedView: View {
     /// presentation single-stack.
     @State private var pendingContributorItemId: String?
 
-    private var connectivity: ConnectivityMonitor { .shared }
-
     private var hasActiveFilters: Bool {
         !viewModel.selectedProductTypes.isEmpty || !viewModel.selectedGenders.isEmpty
-    }
-
-    /// Subway mode: cached cards keep working and swipes queue locally; this
-    /// strip just tells the user what's happening instead of erroring.
-    private var offlineBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "wifi.slash")
-                .font(.system(size: 12, weight: .bold))
-            Text("You're offline — swipes will sync when you're back")
-                .font(.appDisplay(size: 12))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .foregroundStyle(Color.appPrimaryText)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(Color(red: 1.0, green: 0.85, blue: 0.2))
-        .overlay(
-            Rectangle()
-                .fill(Color.black)
-                .frame(height: 2)
-                .frame(maxHeight: .infinity, alignment: .bottom)
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     /// Empty/caught-up state with a way out: refresh, and clear filters when
@@ -113,8 +86,11 @@ struct FeedView: View {
         VStack(spacing: 0) {
             PopArtTitleBar("Feed")
             filterBar
-            if !connectivity.isOnline {
-                offlineBanner
+            // Server-reachability strip (real request outcomes + /health), not
+            // NWPathMonitor: Wi-Fi with Tailscale off is still "unreachable".
+            // Cached cards keep working and swipes queue locally meanwhile.
+            ServerUnreachableBanner(detail: "Swipes will sync when you're back") {
+                await viewModel.reloadAfterServerRecovery()
             }
             Group {
                 if viewModel.isLoading {

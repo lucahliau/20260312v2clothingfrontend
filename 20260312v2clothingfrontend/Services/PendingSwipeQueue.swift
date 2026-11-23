@@ -161,8 +161,11 @@ extension Error {
                 return false
             }
         }
-        if let networkError = self as? NetworkError, case .transient = networkError {
-            return true
+        if let networkError = self as? NetworkError {
+            switch networkError {
+            case .transient, .serverUnreachable: return true
+            default: return false
+            }
         }
         return false
     }

@@ -149,6 +149,9 @@ struct ExploreView: View {
         @Bindable var exploreModel = exploreModel
         VStack(spacing: 0) {
             PopArtTitleBar("Explore")
+            ServerUnreachableBanner {
+                await exploreModel.reloadAfterServerRecovery()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     searchBarContent(binding: $exploreModel.searchText, isFocused: $searchFieldFocused)

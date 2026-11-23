@@ -52,6 +52,19 @@ final class ExploreViewModel {
         }
     }
 
+    /// The server just became reachable again: load whatever failed while it
+    /// was away (featured rail, saved strip, the active search).
+    func reloadAfterServerRecovery() async {
+        errorMessage = nil
+        async let saved: Void = refreshSavedBrands()
+        await loadFeaturedIfNeeded()
+        await saved
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           brandResults.isEmpty, productResults.isEmpty {
+            onSearchTextChanged()
+        }
+    }
+
     func loadFeaturedIfNeeded() async {
         guard featuredBrands.isEmpty, !isLoadingFeatured else { return }
         isLoadingFeatured = true
