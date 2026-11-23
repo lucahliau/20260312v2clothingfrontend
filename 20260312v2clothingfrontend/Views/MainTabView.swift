@@ -58,7 +58,7 @@ struct MainTabView: View {
                 WardrobeHomeView()
             }
             .tabItem {
-                Label("Wardrobe", systemImage: "hanger")
+                Label("Saved", systemImage: "hanger")
             }
             .tag(MainTab.wardrobe)
 

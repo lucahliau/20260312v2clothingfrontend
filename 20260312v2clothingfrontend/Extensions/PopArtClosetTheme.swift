@@ -73,3 +73,48 @@ struct PopArtShelfPlank: View {
         }
     }
 }
+
+/// A classic hanger silhouette: hook, shoulders, and a straight lower bar.
+struct HangerShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let w = rect.width
+        let h = rect.height
+        let midX = rect.midX
+
+        // Hook: open curl above the neck.
+        p.move(to: CGPoint(x: midX + 6, y: rect.minY + 4))
+        p.addArc(
+            center: CGPoint(x: midX, y: rect.minY + 5),
+            radius: 5,
+            startAngle: .degrees(0),
+            endAngle: .degrees(180),
+            clockwise: true
+        )
+        p.addLine(to: CGPoint(x: midX - 5, y: rect.minY + 8))
+
+        // Neck down to the shoulder spread point.
+        p.move(to: CGPoint(x: midX, y: rect.minY + 9))
+        p.addLine(to: CGPoint(x: midX, y: rect.minY + h * 0.34))
+
+        // Shoulders: gentle curves out to the ends.
+        let shoulderY = rect.minY + h * 0.34
+        let endY = rect.maxY - 3
+        p.move(to: CGPoint(x: midX, y: shoulderY))
+        p.addQuadCurve(
+            to: CGPoint(x: rect.minX + 3, y: endY),
+            control: CGPoint(x: midX - w * 0.34, y: shoulderY + 2)
+        )
+        p.move(to: CGPoint(x: midX, y: shoulderY))
+        p.addQuadCurve(
+            to: CGPoint(x: rect.maxX - 3, y: endY),
+            control: CGPoint(x: midX + w * 0.34, y: shoulderY + 2)
+        )
+
+        // Lower bar connecting the two ends.
+        p.move(to: CGPoint(x: rect.minX + 3, y: endY))
+        p.addLine(to: CGPoint(x: rect.maxX - 3, y: endY))
+
+        return p
+    }
+}

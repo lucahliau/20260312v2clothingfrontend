@@ -70,10 +70,193 @@ struct Outfit: Equatable {
     }
 }
 
+/// Sort orders for the saved-items grid.
+enum WardrobeSort: String, CaseIterable, Hashable, Sendable {
+    case recentlyLiked
+    case priceLowToHigh
+    case priceHighToLow
+    case brandAZ
+
+    var displayName: String {
+        switch self {
+        case .recentlyLiked: return "Recently liked"
+        case .priceLowToHigh: return "Price: low to high"
+        case .priceHighToLow: return "Price: high to low"
+        case .brandAZ: return "Brand A–Z"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .recentlyLiked: return "Recent"
+        case .priceLowToHigh: return "Price ↑"
+        case .priceHighToLow: return "Price ↓"
+        case .brandAZ: return "Brand A–Z"
+        }
+    }
+}
+
+/// A selectable filter value with how many saved items carry it.
+struct WardrobeFilterOption: Identifiable, Hashable, Sendable {
+    /// Lowercased match key.
+    let id: String
+    let label: String
+    let count: Int
+}
+
 @Observable
 final class WardrobeViewModel {
     var selectedCategory: WardrobeCategory = .all
     var outfit = Outfit()
+
+    // MARK: - Saved grid: sort + filters (kept here so they survive tab switches)
+
+    var sort: WardrobeSort = .recentlyLiked
+    /// Lowercased brand key, or `nil` for all brands.
+    var brandFilter: String?
+    /// Lowercased type key (see `typeKey(for:)`), or `nil` for all types.
+    var typeFilter: String?
+    var lovedOnly = false
+
+    /// Short-lived confirmation / failure banner shown over the Wardrobe.
+    var toastMessage: String?
+    private var toastTask: Task<Void, Never>?
+
+    var hasActiveFilters: Bool {
+        brandFilter != nil || typeFilter != nil || lovedOnly
+    }
+
+    func clearFilters() {
+        brandFilter = nil
+        typeFilter = nil
+        lovedOnly = false
+    }
+
+    @MainActor
+    func showToast(_ message: String) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.4))
+            guard !Task.isCancelled else { return }
+            self?.toastMessage = nil
+        }
+    }
+
+    private static func brandKey(for item: Item) -> String? {
+        guard let brand = item.brand?.trimmingCharacters(in: .whitespacesAndNewlines), !brand.isEmpty else { return nil }
+        return brand.lowercased()
+    }
+
+    /// One "type" per item for the filter: Shoes come from `category`, the
+    /// rest from `productType` (tops, bottoms, jackets, bags, accessories…),
+    /// falling back to the raw category, then "other".
+    static func typeKey(for item: Item) -> String {
+        if isShoe(item) { return "shoes" }
+        if let type = item.productType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !type.isEmpty {
+            return type
+        }
+        if let category = item.category?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !category.isEmpty {
+            return category
+        }
+        return "other"
+    }
+
+    /// Brands present in the saved set, A–Z, with counts.
+    func brandOptions(from records: [SwipeRecord]) -> [WardrobeFilterOption] {
+        var counts: [String: (label: String, count: Int)] = [:]
+        for record in records {
+            guard let item = record.item, let key = Self.brandKey(for: item) else { continue }
+            counts[key, default: (item.brand?.displayNormalizedTitle ?? key, 0)].count += 1
+        }
+        return counts
+            .map { WardrobeFilterOption(id: $0.key, label: $0.value.label, count: $0.value.count) }
+            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    /// Types present in the saved set, most common first.
+    func typeOptions(from records: [SwipeRecord]) -> [WardrobeFilterOption] {
+        var counts: [String: Int] = [:]
+        for record in records {
+            guard let item = record.item else { continue }
+            counts[Self.typeKey(for: item), default: 0] += 1
+        }
+        return counts
+            .map { WardrobeFilterOption(id: $0.key, label: $0.key.localizedCapitalized, count: $0.value) }
+            .sorted { ($0.count, $1.label) > ($1.count, $0.label) }
+    }
+
+    /// The grid's contents: every saved record narrowed by the text query and
+    /// the active filters, in the chosen order. `records` arrive newest-first
+    /// from the server, which is the "recently liked" order.
+    func visibleRecords(from records: [SwipeRecord], query: String) -> [SwipeRecord] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = records.filter { record in
+            guard Self.isFavorited(record) else { return false }
+            if lovedOnly, record.action != .LOVE { return false }
+            guard let item = record.item else {
+                // No embedded item: nothing to match filters or text against.
+                return q.isEmpty && brandFilter == nil && typeFilter == nil
+            }
+            if let brandFilter, Self.brandKey(for: item) != brandFilter { return false }
+            if let typeFilter, Self.typeKey(for: item) != typeFilter { return false }
+            if q.isEmpty { return true }
+            if item.name.lowercased().contains(q) { return true }
+            if let brand = item.brand, brand.lowercased().contains(q) { return true }
+            if let category = item.category, category.lowercased().contains(q) { return true }
+            return false
+        }
+        switch sort {
+        case .recentlyLiked:
+            return filtered
+        case .priceLowToHigh:
+            return Self.stableSorted(filtered) { a, b in
+                Self.comparePrice(a.item?.priceDouble, b.item?.priceDouble, ascending: true)
+            }
+        case .priceHighToLow:
+            return Self.stableSorted(filtered) { a, b in
+                Self.comparePrice(a.item?.priceDouble, b.item?.priceDouble, ascending: false)
+            }
+        case .brandAZ:
+            return Self.stableSorted(filtered) { a, b in
+                let brandA = a.item?.brand ?? ""
+                let brandB = b.item?.brand ?? ""
+                // Unbranded items sink to the end.
+                if brandA.isEmpty != brandB.isEmpty {
+                    return brandB.isEmpty ? .orderedAscending : .orderedDescending
+                }
+                let byBrand = brandA.localizedCaseInsensitiveCompare(brandB)
+                if byBrand != .orderedSame { return byBrand }
+                return (a.item?.name ?? "").localizedCaseInsensitiveCompare(b.item?.name ?? "")
+            }
+        }
+    }
+
+    /// Items without a price always sort last, whichever direction.
+    private static func comparePrice(_ a: Double?, _ b: Double?, ascending: Bool) -> ComparisonResult {
+        switch (a, b) {
+        case (nil, nil): return .orderedSame
+        case (nil, _): return .orderedDescending
+        case (_, nil): return .orderedAscending
+        case let (x?, y?):
+            if x == y { return .orderedSame }
+            return (x < y) == ascending ? .orderedAscending : .orderedDescending
+        }
+    }
+
+    /// Ties keep their incoming (recently-liked) order.
+    private static func stableSorted(
+        _ records: [SwipeRecord],
+        by compare: (SwipeRecord, SwipeRecord) -> ComparisonResult
+    ) -> [SwipeRecord] {
+        records.enumerated().sorted { lhs, rhs in
+            switch compare(lhs.element, rhs.element) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
 
     // MARK: - Collections (the Closet drawer)
 
@@ -132,31 +315,6 @@ final class WardrobeViewModel {
 
     // MARK: - Rail / shelf / rack filters
 
-    /// Top closet rail: tops, jackets, and anything hangable that isn't
-    /// bottoms (unknown product types hang here so nothing disappears).
-    func topRailRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
-        hangableRecords(from: records).filter {
-            $0.item?.productType?.lowercased() != "bottoms"
-        }
-    }
-
-    /// Bottom closet rail: bottoms only — scrolls independently of the top
-    /// rail so outfits can be mixed and matched.
-    func bottomRailRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
-        hangableRecords(from: records).filter {
-            $0.item?.productType?.lowercased() == "bottoms"
-        }
-    }
-
-    private func hangableRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
-        records.filter { record in
-            guard Self.isFavorited(record), let item = record.item else { return false }
-            if Self.isShoe(item) { return false }
-            if Self.isShelfItem(item) { return false }
-            return true
-        }
-    }
-
     func hangerRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
         let equipped = outfit.equippedIDs
         return records.filter { record in
@@ -166,33 +324,6 @@ final class WardrobeViewModel {
             if Self.isShelfItem(item) { return false }
             guard let raw = selectedCategory.productTypeRaw else { return true }
             return item.productType?.lowercased() == raw
-        }
-    }
-
-    func shelfRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
-        records.filter { record in
-            guard Self.isFavorited(record), let item = record.item else { return false }
-            return Self.isShelfItem(item)
-        }
-    }
-
-    /// Everything the closet can show (rails + shelf + shoes) — used for the
-    /// whole-closet empty state and as the search corpus.
-    func allClosetRecords(from records: [SwipeRecord]) -> [SwipeRecord] {
-        records.filter { record in
-            Self.isFavorited(record) && record.item != nil
-        }
-    }
-
-    /// Case-insensitive name/brand search over the favorited closet items.
-    func searchClosetRecords(from records: [SwipeRecord], query: String) -> [SwipeRecord] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return [] }
-        return allClosetRecords(from: records).filter { record in
-            guard let item = record.item else { return false }
-            if item.name.lowercased().contains(q) { return true }
-            if let brand = item.brand, brand.lowercased().contains(q) { return true }
-            return false
         }
     }
 

@@ -481,54 +481,32 @@ struct FriendsListSkeletonView: View {
 
 // MARK: - Wardrobe closet skeleton
 
-/// Mirrors `ClosetView`: two horizontal hanger rails + a shelf row + a shoe
-/// rack. Shown on first load (before the swipe history arrives) so the closet
-/// shimmers instead of flashing the per-rail empty states. Lighter ghosts than
-/// the white-card skeletons since the closet sits on the dark halftone wall.
+/// Ghost of the saved-items grid: image tiles with two caption lines. Shown
+/// on first load (before the liked items arrive) so the Wardrobe shimmers
+/// instead of flashing its empty state. Lighter ghosts than the white-card
+/// skeletons since the closet sits on the dark halftone wall.
 struct ClosetSkeletonView: View {
     private let base = Color.white.opacity(0.16)
     private let highlight = Color.white.opacity(0.5)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            railHeader
-            hangerRail(count: 4, height: 150)
-            railHeader.padding(.top, 6)
-            hangerRail(count: 4, height: 168)
-            railHeader.padding(.top, 6)
-            tileRow(count: 4, side: 86)
-            railHeader.padding(.top, 6)
-            tileRow(count: 4, side: 96)
-        }
-        .padding(.top, 2)
-        .padding(.bottom, 14)
-    }
-
-    private var railHeader: some View {
-        block(width: 150, height: 20, cornerRadius: 6)
-            .padding(.leading, 16)
-            .padding(.top, 4)
-    }
-
-    private func hangerRail(count: Int, height: CGFloat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(0..<count, id: \.self) { _ in
-                    block(width: 120, height: height, cornerRadius: 14)
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 105), spacing: 14)],
+            spacing: 18
+        ) {
+            ForEach(0..<9, id: \.self) { _ in
+                VStack(spacing: 6) {
+                    block(width: 96, height: 110, cornerRadius: 12)
+                    block(width: 84, height: 10, cornerRadius: 4)
+                    block(width: 54, height: 9, cornerRadius: 4)
                 }
             }
-            .padding(.horizontal, 16)
         }
-        .scrollDisabled(true)
-    }
-
-    private func tileRow(count: Int, side: CGFloat) -> some View {
-        HStack(spacing: 12) {
-            ForEach(0..<count, id: \.self) { _ in
-                block(width: side, height: side, cornerRadius: 12)
-            }
-        }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Loading saved items")
     }
 
     /// Pop-art ghost tile: shimmer fill + the black outline used across the closet.

@@ -1,36 +1,45 @@
 import SwiftUI
 
-/// Long-press context menu for filing a closet item into a collection — the
+/// The "Add to collection" entries for a saved item's long-press menu — the
 /// discoverable sibling of drag-and-dropping onto a stack in the drawer.
-struct AddToCollectionMenuModifier: ViewModifier {
+/// A plain view so hosts can combine it with their own menu actions.
+struct AddToCollectionMenuItems: View {
     let recordId: String
     @Environment(WardrobeViewModel.self) private var wardrobeViewModel
     @Environment(SwipeHistoryViewModel.self) private var historyViewModel
 
-    func body(content: Content) -> some View {
-        content.contextMenu {
-            if wardrobeViewModel.collections.isEmpty {
-                Button {} label: {
-                    Label("No collections yet — open the drawer below to create one", systemImage: "tray")
-                }
-                .disabled(true)
-            } else {
-                Section("Add to collection") {
-                    ForEach(wardrobeViewModel.collections) { collection in
-                        Button {
-                            Task {
-                                _ = await wardrobeViewModel.addRecord(
-                                    withId: recordId,
-                                    from: historyViewModel.likedRecords,
-                                    to: collection
-                                )
-                            }
-                        } label: {
-                            Label(collection.name, systemImage: "tray.full")
+    var body: some View {
+        if wardrobeViewModel.collections.isEmpty {
+            Button {} label: {
+                Label("No collections yet — open the drawer below to create one", systemImage: "tray")
+            }
+            .disabled(true)
+        } else {
+            Section("Add to collection") {
+                ForEach(wardrobeViewModel.collections) { collection in
+                    Button {
+                        Task {
+                            _ = await wardrobeViewModel.addRecord(
+                                withId: recordId,
+                                from: historyViewModel.likedRecords,
+                                to: collection
+                            )
                         }
+                    } label: {
+                        Label(collection.name, systemImage: "tray.full")
                     }
                 }
             }
+        }
+    }
+}
+
+struct AddToCollectionMenuModifier: ViewModifier {
+    let recordId: String
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            AddToCollectionMenuItems(recordId: recordId)
         }
     }
 }
