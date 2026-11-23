@@ -181,6 +181,36 @@ struct Item: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Price display
+
+extension Item {
+    /// One shared formatter (allocating a NumberFormatter per cell render is
+    /// measurably slow in grids).
+    private static let priceAmountFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.maximumFractionDigits = 2
+        return f
+    }()
+
+    static func formatPriceAmount(_ value: Double) -> String {
+        priceAmountFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    /// Amount plus the item's own currency code, e.g. "129.5 EUR". The single
+    /// price format used by grids, the swipe card and item detail.
+    static func displayPrice(_ value: Double, currency: String?) -> String {
+        let amount = formatPriceAmount(value)
+        guard let currency, !currency.isEmpty else { return amount }
+        return "\(amount) \(currency)"
+    }
+
+    /// `nil` when the item has no parseable price.
+    var displayPrice: String? {
+        priceDouble.map { Item.displayPrice($0, currency: currency) }
+    }
+}
+
 // MARK: - Image URL Helpers
 
 extension String {
