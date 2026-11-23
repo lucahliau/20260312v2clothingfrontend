@@ -62,9 +62,7 @@ struct FeedView: View {
                 .buttonStyle(.plain)
                 if hasActiveFilters {
                     Button {
-                        viewModel.selectedProductTypes = []
-                        viewModel.selectedGenders = []
-                        Task { await viewModel.loadItems() }
+                        viewModel.clearFilters()
                     } label: {
                         Text("Clear filters")
                             .font(.appDisplay(size: 13))
@@ -101,6 +99,12 @@ struct FeedView: View {
                         .padding(.bottom, popArtCardShadowPadding)
                         .allowsHitTesting(false)
                         .accessibilityLabel("Loading feed")
+                } else if !viewModel.hasMoreItems, let message = viewModel.feedLoadErrorMessage {
+                    feedEmptyState(
+                        title: "Couldn't load your feed",
+                        icon: "wifi.exclamationmark",
+                        message: message
+                    )
                 } else if !viewModel.hasMoreItems && viewModel.items.isEmpty {
                     feedEmptyState(
                         title: "No items",
@@ -288,6 +292,16 @@ struct FeedView: View {
             .padding(.vertical, 40)
             .padding(.trailing, popArtCardShadowPadding)
             .padding(.bottom, popArtCardShadowPadding)
+            // Sits in the empty band under the card, so the card keeps its size.
+            .overlay(alignment: .bottomLeading) {
+                if viewModel.canUndoLastSwipe {
+                    undoButton
+                        .padding(.leading, 20)
+                        .padding(.bottom, 4)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: viewModel.canUndoLastSwipe)
 
             if viewModel.showFeedSwipeHint {
                 Text("Swipe the card to like or dislike. Tap it for more product details")
@@ -301,6 +315,24 @@ struct FeedView: View {
             }
         }
         .animation(.easeOut(duration: 0.22), value: viewModel.showFeedSwipeHint)
+    }
+
+    /// Takes back the last swipe and puts its card on top again.
+    private var undoButton: some View {
+        Button {
+            viewModel.undoLastSwipe()
+        } label: {
+            Label("Undo", systemImage: "arrow.uturn.backward")
+                .font(.appDisplay(size: 13))
+                .foregroundStyle(Color.appPrimaryText)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.white))
+                .overlay(Capsule().stroke(Color.black, lineWidth: 2.5))
+                .background(Capsule().fill(Color.black).offset(x: 2.5, y: 2.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Undo last swipe")
     }
 
     /// One card in the windowed deck. The top card (depth 0) is interactive and
@@ -324,7 +356,10 @@ struct FeedView: View {
                 viewModel.removeCurrentFeedItemIfBroken404(matchingItemId: item.id)
             },
             match: viewModel.match(for: item.id),
-            onMatchTap: isTop ? viewModel.match(for: item.id).map { m in { matchDetail = m } } : nil
+            onMatchTap: isTop ? viewModel.match(for: item.id).map { m in { matchDetail = m } } : nil,
+            onInteractionChanged: { active in
+                viewModel.setCardInteractionActive(active)
+            }
         )
         .scaleEffect(deckCardScale(depth: depth))
         .offset(y: deckCardOffsetY(depth: depth))

@@ -5,7 +5,7 @@ enum FeedWarmCache {
     // 15 cards (~2-4KB JSON each) covers a whole session of swipes before the
     // background network refresh has to land.
     private static let maxItems = 15
-    private static let fileName = "feed_warm_cache.json"
+    private nonisolated static let fileName = "feed_warm_cache.json"
 
     private struct Snapshot: Codable {
         let items: [Item]
@@ -13,13 +13,16 @@ enum FeedWarmCache {
         let genders: [String]
     }
 
-    private static var fileURL: URL {
+    private nonisolated static var fileURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = base.appendingPathComponent("FeedWarmCache", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(fileName)
     }
+
+    /// Serial queue so snapshot writes land in the order they were requested.
+    private nonisolated static let writeQueue = DispatchQueue(label: "feed-warm-cache-write", qos: .utility)
 
     private static func fingerprint(
         productTypes: Set<ProductType>,
@@ -39,15 +42,17 @@ enum FeedWarmCache {
         return snapshot.productTypes == fp.productTypes && snapshot.genders == fp.genders
     }
 
+    /// Encodes the (capped, ~15 item) snapshot and hands the file write to a
+    /// background queue, so no disk I/O happens on the main thread. Callers
+    /// debounce this (see `FeedViewModel.persistFeedWarmCache`) so a burst of
+    /// swipes produces one write.
     static func save(items: ArraySlice<Item>, productTypes: Set<ProductType>, genders: Set<GenderFilter>) {
         let fp = fingerprint(productTypes: productTypes, genders: genders)
         let capped = Array(items.prefix(maxItems))
         let snapshot = Snapshot(items: capped, productTypes: fp.productTypes, genders: fp.genders)
-        do {
-            let data = try JSONEncoder().encode(snapshot)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            // Best effort
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        writeQueue.async {
+            try? data.write(to: fileURL, options: .atomic)
         }
     }
 
@@ -61,8 +66,11 @@ enum FeedWarmCache {
         return snapshot.items
     }
 
-    /// Removes the on-disk warm snapshot (e.g. from Settings).
+    /// Removes the on-disk warm snapshot (e.g. from Settings). Queued behind
+    /// any pending write so a late save can't resurrect it.
     static func clear() {
-        try? FileManager.default.removeItem(at: fileURL)
+        writeQueue.async {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
 }

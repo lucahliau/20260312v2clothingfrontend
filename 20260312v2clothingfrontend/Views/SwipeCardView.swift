@@ -17,6 +17,10 @@ struct SwipeCardView: View {
     /// Invoked when the user taps the match badge (caller presents an
     /// explainer sheet). When `nil` the badge is shown but non-tappable.
     var onMatchTap: (() -> Void)? = nil
+    /// Reports `true` when a drag starts and `false` when it ends without a
+    /// swipe. (A committed swipe ends with `onSwipe`.) Lets the feed avoid
+    /// replacing the deck under the user's finger.
+    var onInteractionChanged: ((Bool) -> Void)? = nil
 
     @State private var dragOffset: CGSize = .zero
     @State private var imageLoadFinished: Bool
@@ -31,7 +35,8 @@ struct SwipeCardView: View {
         onTap: @escaping () -> Void,
         onUnrecoverableImage404: (() -> Void)? = nil,
         match: FeedMatch? = nil,
-        onMatchTap: (() -> Void)? = nil
+        onMatchTap: (() -> Void)? = nil,
+        onInteractionChanged: ((Bool) -> Void)? = nil
     ) {
         self.item = item
         self.onSwipe = onSwipe
@@ -39,6 +44,7 @@ struct SwipeCardView: View {
         self.onUnrecoverableImage404 = onUnrecoverableImage404
         self.match = match
         self.onMatchTap = onMatchTap
+        self.onInteractionChanged = onInteractionChanged
         // Seed the load gate from the synchronous image cache. When the image was
         // already prefetched (the common case with the feed's look-ahead), the
         // card renders instantly — no skeleton, no fade — which removes the
@@ -78,23 +84,24 @@ struct SwipeCardView: View {
                 if !imageLoadFinished {
                     SwipeCardSkeletonView()
                 }
-                ZStack(alignment: .bottom) {
-                    imageContent(size: size)
-                    titleBand(width: size.width)
+                // Only the photo waits for the load; the title band (name, brand,
+                // price) and the swipe stamps are there from the start, so a
+                // slow or stalled image never blocks reading or swiping the card.
+                imageContent(size: size)
+                    .opacity(imageLoadFinished ? 1 : 0)
+                titleBand(width: size.width)
+            }
+            .overlay(alignment: .topTrailing) {
+                if let badge = MatchBadgeStyle.from(match: match), imageLoadFinished {
+                    matchBadge(badge)
+                        .padding(.top, 12)
+                        .padding(.trailing, 12)
                 }
-                .overlay(alignment: .topTrailing) {
-                    if let badge = MatchBadgeStyle.from(match: match), imageLoadFinished {
-                        matchBadge(badge)
-                            .padding(.top, 12)
-                            .padding(.trailing, 12)
-                    }
+            }
+            .overlay {
+                if let preview = dominantSwipePreview(translation: dragOffset) {
+                    previewStamp(for: preview, translation: dragOffset)
                 }
-                .overlay {
-                    if let preview = dominantSwipePreview(translation: dragOffset), imageLoadFinished {
-                        previewStamp(for: preview, translation: dragOffset)
-                    }
-                }
-                .opacity(imageLoadFinished ? 1 : 0)
             }
             .frame(width: size.width, height: size.height)
             .background(Color.cardBackground)
@@ -118,6 +125,7 @@ struct SwipeCardView: View {
                 DragGesture()
                     .onChanged { value in
                         guard !isExiting else { return }
+                        if dragOffset == .zero { onInteractionChanged?(true) }
                         dragOffset = value.translation
                     }
                     .onEnded { value in
@@ -135,6 +143,7 @@ struct SwipeCardView: View {
                                 _ = await onSwipe(action)
                             }
                         } else {
+                            onInteractionChanged?(false)
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                                 dragOffset = .zero
                             }
@@ -144,7 +153,9 @@ struct SwipeCardView: View {
             .onTapGesture {
                 onTap()
             }
-            .allowsHitTesting(imageLoadFinished && !isExiting)
+            // Always interactive (except while flying off): the card must not
+            // wait for its image to become swipeable.
+            .allowsHitTesting(!isExiting)
         }
         .animation(.easeOut(duration: 0.2), value: imageLoadFinished)
         .onAppear {
@@ -163,11 +174,12 @@ struct SwipeCardView: View {
         }
     }
 
+    /// Tilt follows the horizontal offset only: continuous through zero, same
+    /// sign as the drag direction, capped. (The old `atan2(y, x)` flipped sign
+    /// and jumped by up to 54 degrees on a leftward drag crossing the x-axis.)
     private var rotationDegrees: Double {
-        let x = dragOffset.width
-        let y = dragOffset.height
-        let angle = atan2(y, x)
-        return Double(angle) * 180 / .pi * 0.15
+        let maxDegrees = 12.0
+        return max(-maxDegrees, min(maxDegrees, Double(dragOffset.width) / 16))
     }
 
     @ViewBuilder
@@ -184,7 +196,10 @@ struct SwipeCardView: View {
                 // (on load completion). Prevents a one-frame fade race where a
                 // freshly-mounted task resets a cache-hit card back to loading.
                 resetsLoadingBinding: false,
-                onUnrecoverableHTTP404: onUnrecoverableImage404
+                onUnrecoverableHTTP404: onUnrecoverableImage404,
+                // A non-404 failure (timeout, server asleep) shows a tap-to-retry
+                // tile instead of a permanent shimmer.
+                retryOnFailure: true
             )
                 .aspectRatio(contentMode: .fill)
                 .frame(width: size.width, height: size.height)
@@ -197,23 +212,49 @@ struct SwipeCardView: View {
         }
     }
 
+    private var brandLabel: String? {
+        guard let brand = item.brand?.trimmingCharacters(in: .whitespacesAndNewlines), !brand.isEmpty else { return nil }
+        return brand.displayNormalizedTitle
+    }
+
+    /// Pink band: brand above the name on the left, price on the right.
     private func titleBand(width: CGFloat) -> some View {
-        Text(item.name)
-            .font(.appDisplay(size: 19))
-            .foregroundStyle(Color.white)
-            .lineLimit(2)
-            .minimumScaleFactor(0.85)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-            .frame(minWidth: width, maxWidth: width, minHeight: titleBandMinHeight, alignment: .leading)
-            .background(Color.appNeonPink)
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(Color.black)
-                    .frame(height: PopArtCardStyle.strokeWidth)
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                if let brandLabel {
+                    Text(brandLabel.uppercased())
+                        .font(.appDisplay(size: 12))
+                        .tracking(0.8)
+                        .foregroundStyle(Color.white.opacity(0.9))
+                        .lineLimit(1)
+                }
+                Text(item.name)
+                    .font(.appDisplay(size: 19))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .multilineTextAlignment(.leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let price = item.displayPrice {
+                Text(price)
+                    .font(.appDisplay(size: 16))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .layoutPriority(1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(minWidth: width, maxWidth: width, minHeight: titleBandMinHeight, alignment: .leading)
+        .background(Color.appNeonPink)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.black)
+                .frame(height: PopArtCardStyle.strokeWidth)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// Same dominant-axis rule as `resolveAction`, but activates after a small dead zone (preview only).

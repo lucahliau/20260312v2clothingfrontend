@@ -72,6 +72,19 @@ actor PendingSwipeQueue {
         scheduleFlush(afterNanos: entries.count >= Self.flushThreshold ? 0 : Self.debounceNanos)
     }
 
+    /// Feed "Undo": drops a swipe that has not been sent yet. Returns `false`
+    /// when it already left the queue (the server has it; re-swiping the
+    /// restored card overwrites it, since POST /swipes is an upsert).
+    @discardableResult
+    func remove(itemId: String) -> Bool {
+        loadIfNeeded()
+        let before = entries.count
+        entries.removeAll { $0.itemId == itemId }
+        guard entries.count != before else { return false }
+        persist()
+        return true
+    }
+
     func pendingCount() -> Int {
         loadIfNeeded()
         return entries.count
