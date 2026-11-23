@@ -30,7 +30,6 @@ struct DeleteAccountSheet: View {
                         bullet("Your profile and photo")
                         bullet("Your swipes and feed history")
                         bullet("Your collections and wardrobe")
-                        bullet("Your friends and messages")
                     }
 
                     Text("Everything is removed immediately and can't be recovered.")

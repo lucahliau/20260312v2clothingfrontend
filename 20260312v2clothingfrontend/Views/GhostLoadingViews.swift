@@ -444,41 +444,6 @@ struct ExploreSearchLoadingSkeletonView: View {
     }
 }
 
-// MARK: - Friends skeletons
-
-struct FriendsSearchRowSkeleton: View {
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Circle()
-                .fill(GhostPalette.base)
-                .frame(width: 48, height: 48)
-                .overlay { HistoryThumbShimmer() }
-                .clipShape(Circle())
-
-            VStack(alignment: .leading, spacing: 5) {
-                GhostBlock(height: 17, cornerRadius: 5, widthFraction: 0.92)
-                GhostBlock(height: 15, cornerRadius: 5, widthFraction: 0.45)
-            }
-            Spacer(minLength: 8)
-            GhostBlock(height: 14, cornerRadius: 4, widthFraction: 1)
-                .frame(width: 10)
-        }
-        .padding(15)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct FriendsListSkeletonView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(0..<6, id: \.self) { _ in
-                FriendsSearchRowSkeleton()
-                    .popArtCardContainer()
-            }
-        }
-    }
-}
-
 // MARK: - Wardrobe closet skeleton
 
 /// Ghost of the saved-items grid: image tiles with two caption lines. Shown
@@ -520,53 +485,3 @@ struct ClosetSkeletonView: View {
             )
     }
 }
-
-// MARK: - Conversation list row skeleton
-
-/// Avatar circle + two text lines, matching a conversations-list row. Lives
-/// here (was inline in ConversationsListView) so every skeleton shares one
-/// shimmer treatment.
-struct ConversationRowSkeleton: View {
-    var body: some View {
-        HStack(spacing: 14) {
-            ShimmerFill()
-                .frame(width: 52, height: 52)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 8) {
-                GhostBlock(height: 14, cornerRadius: 4, widthFraction: 0.55)
-                GhostBlock(height: 12, cornerRadius: 4, widthFraction: 1)
-            }
-        }
-        .padding(15)
-    }
-}
-
-// MARK: - Conversation thread skeleton
-
-/// Placeholder bubbles for a DM thread's initial load — alternating incoming
-/// (leading) and outgoing (trailing) shimmer bubbles of varied widths.
-struct ConversationThreadSkeletonView: View {
-    /// (isOutgoing, width, height) — a believable back-and-forth.
-    private let bubbles: [(Bool, CGFloat, CGFloat)] = [
-        (false, 150, 38), (true, 110, 38), (false, 210, 56),
-        (true, 170, 38), (false, 90, 38), (true, 200, 56),
-    ]
-
-    var body: some View {
-        VStack(spacing: 12) {
-            ForEach(Array(bubbles.enumerated()), id: \.offset) { _, b in
-                HStack {
-                    if b.0 { Spacer(minLength: 60) }
-                    ShimmerFill()
-                        .frame(width: b.1, height: b.2)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-                    if !b.0 { Spacer(minLength: 60) }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-}
-

@@ -2,7 +2,7 @@ import SwiftUI
 import UserNotifications
 
 enum MainTab: String, Hashable {
-    case feed, explore, wardrobe, friends, settings
+    case feed, explore, wardrobe, settings
 }
 
 /// Cross-tab navigation: any view can switch the selected tab (e.g. the empty
@@ -30,7 +30,6 @@ struct MainTabView: View {
     @State private var swipeHistoryViewModel = SwipeHistoryViewModel()
     @State private var wardrobeViewModel = WardrobeViewModel()
     @State private var exploreViewModel = ExploreViewModel()
-    @State private var friendsViewModel = FriendsViewModel()
     @State private var settingsViewModel = SettingsViewModel()
     @State private var didStartSessionWarmup = false
     @State private var tabRouter = TabRouter()
@@ -63,14 +62,6 @@ struct MainTabView: View {
             .tag(MainTab.wardrobe)
 
             NavigationStack {
-                FriendsView()
-            }
-            .tabItem {
-                Label("Friends", systemImage: "person.2")
-            }
-            .tag(MainTab.friends)
-
-            NavigationStack {
                 SettingsView()
             }
             .tabItem {
@@ -82,7 +73,6 @@ struct MainTabView: View {
         .environment(swipeHistoryViewModel)
         .environment(wardrobeViewModel)
         .environment(exploreViewModel)
-        .environment(friendsViewModel)
         .environment(settingsViewModel)
         .environment(tabRouter)
         // Verify-later nag, pinned just above the tab bar on every tab.

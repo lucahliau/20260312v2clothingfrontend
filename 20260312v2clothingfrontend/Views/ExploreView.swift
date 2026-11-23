@@ -600,7 +600,6 @@ private enum BrandFilterOverlay: Identifiable {
 struct BrandProductsView: View {
     @State private var viewModel: BrandProductsViewModel
     @State private var selectedItem: Item?
-    @State private var shareItem: Item?
     @State private var filterOverlay: BrandFilterOverlay?
 
     private var theme: BrandBannerTheme {
@@ -667,11 +666,6 @@ struct BrandProductsView: View {
                                         Task { try? await SwipeService.recordSwipe(itemId: item.id, type: .LIKE) }
                                     } label: {
                                         Label("Like", systemImage: "hand.thumbsup.fill")
-                                    }
-                                    Button {
-                                        shareItem = item
-                                    } label: {
-                                        Label("Send to a friend", systemImage: "paperplane.fill")
                                     }
                                 }
                                 .onAppear {
@@ -752,9 +746,6 @@ struct BrandProductsView: View {
             NavigationStack {
                 ItemDetailView(item: item, isPresented: true)
             }
-        }
-        .sheet(item: $shareItem) { item in
-            ShareItemSheet(item: item)
         }
         .sheet(item: $filterOverlay) { overlay in
             brandFilterSheet(overlay)

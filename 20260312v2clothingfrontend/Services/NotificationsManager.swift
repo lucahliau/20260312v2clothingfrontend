@@ -1,13 +1,10 @@
 import Foundation
 import UserNotifications
 
-/// Local notifications: two daily "come swipe" nudges (9:00 and 14:00) plus
-/// event alerts when 2+ friends like the same item (data from
-/// `/social/friends/hot-items`, checked on app launch/foreground).
+/// Local notifications: two daily "come swipe" nudges (9:00 and 14:00).
 enum NotificationsManager {
     private static let morningId = "daily-nudge-morning"
     private static let afternoonId = "daily-nudge-afternoon"
-    private static let notifiedHotItemsKey = "friendsHotItemsNotifiedIds"
 
     /// Call once the user is authenticated: asks permission on first run,
     /// then (re)schedules the repeating daily nudges.
@@ -65,37 +62,5 @@ enum NotificationsManager {
     /// Clear everything on logout so a signed-out device stops nudging.
     static func cancelAll() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
-    }
-
-    // MARK: - Friends hot items
-
-    /// Fetches items that 2+ friends recently liked and fires one local
-    /// notification per item (deduped across launches via UserDefaults).
-    /// Silently no-ops when the endpoint is unavailable or permission denied.
-    static func checkFriendsHotItems() async {
-        guard await isAuthorized() else { return }
-        guard let hot = try? await SocialService.fetchFriendsHotItems(), !hot.isEmpty else { return }
-
-        var notified = Set(UserDefaults.standard.stringArray(forKey: notifiedHotItemsKey) ?? [])
-        let center = UNUserNotificationCenter.current()
-
-        for entry in hot where entry.friendCount >= 2 && !notified.contains(entry.item.id) {
-            notified.insert(entry.item.id)
-
-            let content = UNMutableNotificationContent()
-            content.title = "Your friends found something"
-            content.body = "\(entry.friendCount) friends liked \(entry.item.name.displayNormalizedTitle). See what the fuss is about."
-            content.sound = .default
-
-            let request = UNNotificationRequest(
-                identifier: "friends-hot-\(entry.item.id)",
-                content: content,
-                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 2, repeats: false)
-            )
-            try? await center.add(request)
-        }
-
-        // Cap the dedup list so it can't grow unbounded.
-        UserDefaults.standard.set(Array(notified.suffix(300)), forKey: notifiedHotItemsKey)
     }
 }
